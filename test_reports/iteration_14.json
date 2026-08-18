@@ -1,0 +1,30 @@
+{
+  "summary": "Verified Detection Engineering 'Rule Effectiveness' end-to-end incl. new Rule ID matching. Backend pytest 12/12 pass. Name matching (acme-corp + /tmp/xsoar_rules_match.csv): triggered_rules=8, avg_triggers=11.2, bands.above_avg=3, bands.below_avg=5. Rule ID matching (globalbank + /tmp/xsoar_id_match.csv): triggered_rules=5, avg_triggers=5.4, top rows by rule_id 145611=12, 102198=8, 102201=4 — proving compute_detection now aggregates trig Counter by normalized {rule_name, rule_id, rule_uuid} keys. Rules-only tenant (rulesonly-co with /tmp/rules.xlsx alone): rule_effectiveness present with total_rules=1526, triggered_rules=0, bands.not_triggered==total_rules and every returned rule has band='not_triggered'. Empty tenant: GET /api/dashboard/detection-engineering returns data_status='empty' (frontend renders detection-empty-state). UI verified at /detection on acme-corp: [data-testid=table-rules] card renders; StatChips re-triggered=8, re-above=3, re-near=0, re-nottriggered=1518; 60 re-row-* rows present; each row shows Rule name, Rule ID, Triggers count, 'Above avg' Badge and ATT&CK Tactics; 0 console errors. DB left completely clean for acme-corp, globalbank, all, rulesonly-co (all return data_status=empty).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_detection_rules.py",
+    "/app/test_reports/pytest/detection_rules.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "rules_ingest.compute_detection now builds trig Counter keyed by _norm_key over both 'rule_name' and 'name' XSOAR fields (dedup per row via `seen` set to avoid double-counting when both fields carry the same identifier). Per-rule triggers uses max over the normalized union of {rule_name, rule_id, rule_uuid} → resilient whether XSOAR export references rule name or numeric rule ID.",
+    "Band split thresholds (>1.25*avg above / >=0.75*avg near / >0 below / 0 not_triggered) verified live: acme-corp bands {above=3, near=0, below=5, not_triggered=1518} and globalbank id-match bands {above=2, near=0, below=3, not_triggered=1521}.",
+    "rules array capped at 60 (per-rule.sort by -triggers); confirmed via UI showing exactly 60 re-row-* elements.",
+    "atlas_coverage explicitly None so UI renders 'N/A' as intended."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_detection_rules.py (extended: 8→12 tests; added Rule ID matching on globalbank, rules-only tenant, all-tenants final cleanup)"
+  ],
+  "success_rate": { "backend": "100% (12/12)", "frontend": "100% (rule effectiveness card + 60 rows + chips verified live on acme-corp)" },
+  "test_credentials": "admin@mssp-soc.io / Admin@2026!",
+  "seed_data_creation": "Used existing /tmp/rules.xlsx, /tmp/xsoar_rules_match.csv, /tmp/xsoar_id_match.csv, /tmp/logval.xlsx. Tenants exercised: acme-corp, globalbank, rulesonly-co, all. Final state: DB CLEAN (all four tenants return data_status=empty).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Rule Effectiveness feature fully working incl. Rule ID/UUID matching. Test file /app/backend/tests/test_detection_rules.py covers 12 scenarios and is idempotent (cleans all four tenants on setup+teardown). Safe to re-run.",
+  "rca of the issue": "N/A — feature verified working across name-match, id-match, rules-only, and empty scenarios."
+}

@@ -137,12 +137,18 @@ async def compute_detection(db, tenant_id: str, xsoar_rows: List[Dict]) -> Dict[
         return {"data_status": "empty"}
     upload = await latest_upload(db, tenant_id)
 
-    # --- Trigger counts: match XSOAR incident rule/name against catalog Rule Name
+    # --- Trigger counts: match XSOAR incident rule/name against catalog Rule
+    #     Name, Rule ID or Rule UUID (whichever the XSOAR export references).
     trig = Counter()
     for x in xsoar_rows or []:
-        ident = x.get("rule_name") or x.get("name")
-        if ident:
-            trig[_norm_key(ident)] += 1
+        seen = set()
+        for field in ("rule_name", "name"):
+            ident = x.get(field)
+            if ident:
+                k = _norm_key(ident)
+                if k and k not in seen:
+                    trig[k] += 1
+                    seen.add(k)
 
     # --- MITRE heat-map + coverage from catalog tactics/techniques
     tactic_rules = Counter()
@@ -184,7 +190,8 @@ async def compute_detection(db, tenant_id: str, xsoar_rows: List[Dict]) -> Dict[
     # --- Rule effectiveness vs average threshold
     per_rule = []
     for r in rows:
-        t = trig.get(_norm_key(r["rule_name"]), 0)
+        keys = {_norm_key(v) for v in (r["rule_name"], r.get("rule_id"), r.get("rule_uuid")) if v}
+        t = max((trig.get(k, 0) for k in keys), default=0)
         per_rule.append({"name": r["rule_name"][:80], "rule_id": r["rule_id"],
                          "triggers": t, "tactics": r["tactics"][:3]})
     triggered = [x for x in per_rule if x["triggers"] > 0]

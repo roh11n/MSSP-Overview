@@ -31,9 +31,12 @@ def _base_url() -> str:
 BASE = _base_url()
 TENANT = "acme-corp"
 EMPTY_TENANT = "globalbank"
+RULES_ONLY_TENANT = "rulesonly-co"
+CLEANUP_TENANTS = [TENANT, EMPTY_TENANT, RULES_ONLY_TENANT, "all"]
 
 RULES_FILE = "/tmp/rules.xlsx"
 XSOAR_FILE = "/tmp/xsoar_rules_match.csv"
+XSOAR_ID_FILE = "/tmp/xsoar_id_match.csv"
 LOGVAL_FILE = "/tmp/logval.xlsx"
 
 
@@ -50,20 +53,22 @@ def headers():
 
 @pytest.fixture(scope="module", autouse=True)
 def _clean(headers):
-    for path in ("dashboard/detection/rules-data", "dashboard/detection/logval-data",
-                 "dashboard/soc-manager/data"):
-        headers.delete(f"{BASE}/api/{path}", params={"tenant_id": TENANT})
+    for tenant in CLEANUP_TENANTS:
+        for path in ("dashboard/detection/rules-data", "dashboard/detection/logval-data",
+                     "dashboard/soc-manager/data"):
+            headers.delete(f"{BASE}/api/{path}", params={"tenant_id": tenant})
     yield
-    for path in ("dashboard/detection/rules-data", "dashboard/detection/logval-data",
-                 "dashboard/soc-manager/data"):
-        headers.delete(f"{BASE}/api/{path}", params={"tenant_id": TENANT})
+    for tenant in CLEANUP_TENANTS:
+        for path in ("dashboard/detection/rules-data", "dashboard/detection/logval-data",
+                     "dashboard/soc-manager/data"):
+            headers.delete(f"{BASE}/api/{path}", params={"tenant_id": tenant})
 
 
-def _upload(client, source, filepath):
+def _upload(client, source, filepath, tenant_id=TENANT):
     with open(filepath, "rb") as f:
         return client.post(
             f"{BASE}/api/upload/data",
-            params={"source": source, "tenant_id": TENANT},
+            params={"source": source, "tenant_id": tenant_id},
             files={"file": (os.path.basename(filepath), f)},
         )
 
@@ -163,3 +168,76 @@ def test_08_delete_endpoints_clean(headers):
     r = headers.get(f"{BASE}/api/dashboard/detection-engineering",
                      params={"tenant_id": TENANT})
     assert r.json().get("data_status") == "empty"
+
+
+# --- Rule ID matching (new feature) ------------------------------------------
+def test_09_upload_rules_and_id_xsoar_globalbank(headers):
+    # Ensure globalbank is clean, then upload rules + xsoar_id_match.csv
+    for path in ("dashboard/detection/rules-data", "dashboard/detection/logval-data",
+                 "dashboard/soc-manager/data"):
+        headers.delete(f"{BASE}/api/{path}", params={"tenant_id": EMPTY_TENANT})
+
+    r = _upload(headers, "rules", RULES_FILE, tenant_id=EMPTY_TENANT)
+    assert r.status_code == 200, r.text
+    assert r.json()["bound_rows"] > 1000
+
+    r = _upload(headers, "xsoar", XSOAR_ID_FILE, tenant_id=EMPTY_TENANT)
+    assert r.status_code == 200, r.text
+    assert r.json().get("xsoar_row_count", 0) >= 27
+
+
+def test_10_rule_id_matching_populated(headers):
+    r = headers.get(f"{BASE}/api/dashboard/detection-engineering",
+                     params={"tenant_id": EMPTY_TENANT})
+    d = r.json()
+    re_eff = d["rule_effectiveness"]
+    assert re_eff["triggered_rules"] == 5, (
+        f"expected 5 triggered by rule_id, got {re_eff['triggered_rules']}")
+    top = re_eff["rules"][:3]
+    top_ids = [str(x.get("rule_id")) for x in top]
+    top_trigs = [x["triggers"] for x in top]
+    assert "145611" in top_ids, f"top rule_ids={top_ids}"
+    assert "102198" in top_ids, f"top rule_ids={top_ids}"
+    assert "102201" in top_ids, f"top rule_ids={top_ids}"
+    # Triggers by id (order-independent lookup)
+    by_id = {str(x.get("rule_id")): x["triggers"] for x in re_eff["rules"]}
+    assert by_id.get("145611") == 12
+    assert by_id.get("102198") == 8
+    assert by_id.get("102201") == 4
+
+
+# --- Rules-only tenant (no XSOAR) --------------------------------------------
+def test_11_rules_only_tenant(headers):
+    for path in ("dashboard/detection/rules-data", "dashboard/detection/logval-data",
+                 "dashboard/soc-manager/data"):
+        headers.delete(f"{BASE}/api/{path}", params={"tenant_id": RULES_ONLY_TENANT})
+
+    r = _upload(headers, "rules", RULES_FILE, tenant_id=RULES_ONLY_TENANT)
+    assert r.status_code == 200, r.text
+
+    r = headers.get(f"{BASE}/api/dashboard/detection-engineering",
+                     params={"tenant_id": RULES_ONLY_TENANT})
+    d = r.json()
+    assert d["data_status"] == "live"
+    re_eff = d["rule_effectiveness"]
+    assert re_eff["total_rules"] > 1000
+    assert re_eff["triggered_rules"] == 0
+    assert re_eff["bands"]["above_avg"] == 0
+    assert re_eff["bands"]["near_avg"] == 0
+    assert re_eff["bands"]["below_avg"] == 0
+    assert re_eff["bands"]["not_triggered"] == re_eff["total_rules"]
+    # Every rule in returned array should be band=not_triggered
+    for x in re_eff["rules"]:
+        assert x["band"] == "not_triggered"
+
+
+def test_12_final_cleanup_all_tenants(headers):
+    for tenant in CLEANUP_TENANTS:
+        for path in ("dashboard/detection/rules-data",
+                     "dashboard/detection/logval-data",
+                     "dashboard/soc-manager/data"):
+            headers.delete(f"{BASE}/api/{path}", params={"tenant_id": tenant})
+        r = headers.get(f"{BASE}/api/dashboard/detection-engineering",
+                         params={"tenant_id": tenant})
+        assert r.json().get("data_status") == "empty", (
+            f"tenant {tenant} not empty after cleanup")
