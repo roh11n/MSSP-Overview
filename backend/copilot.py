@@ -44,7 +44,7 @@ IRIS_SYSTEM_PROMPT = (
 # Snapshot builders
 # ---------------------------------------------------------------------------
 
-def build_snapshot(period: str, tenant: dict) -> dict:
+def build_snapshot(period: str, tenant: dict, live_xsoar: Optional[dict] = None) -> dict:
     """Compact KPI snapshot the LLM is grounded on — small, dense, high-signal."""
     ex = tenants_mod.executive_overview(period, tenant)
     soc = tenants_mod.soc_manager(period, tenant)
@@ -102,6 +102,7 @@ def build_snapshot(period: str, tenant: dict) -> dict:
             "top_playbooks": top_playbooks,
         },
         "client_scorecard": cli.get("scorecard", {}),
+        "live_xsoar": live_xsoar or {"data_status": "empty"},
     }
 
 
@@ -114,6 +115,27 @@ def _fallback_answer(question: str, snap: dict) -> str:
     q = (question or "").lower()
     ex = snap["executive"]
     soc = snap["speed"]
+
+    # Live XSOAR questions (rule FP rates / noisiest rules) take priority.
+    live = snap.get("live_xsoar") or {}
+    if live.get("data_status") == "live":
+        nr = live.get("noisy_rules_by_fp") or []
+        if nr and any(k in q for k in ("fp", "false positive", "false-positive", "noisy", "noisiest", "highest fp")):
+            t = nr[0]
+            extra = ", ".join(f"{x['rule']} {x['fp_pct']}%" for x in nr[1:3])
+            tail = f" Next: {extra}." if extra else ""
+            return (
+                f"Highest false-positive rate (live XSOAR): '{t['rule']}' at {t['fp_pct']}% "
+                f"({t['fp']} FPs of {t['total']} incidents).{tail} Consider tuning or suppression — "
+                f"noisy rules erode analyst trust (maps to detection engineering hygiene)."
+            )
+        tr = live.get("top_rules") or []
+        if tr and any(k in q for k in ("rule", "trigger", "most fired", "top rule")):
+            t = tr[0]
+            return (
+                f"Most-triggered rule (live XSOAR): '{t['rule']}' with {t['triggers']} incidents. "
+                f"Review it against MITRE ATT&CK mapping to confirm it is high-fidelity."
+            )
 
     def _pct(v):
         return f"{v}%"
@@ -222,9 +244,9 @@ def _llm_answer(question: str, snap: dict, history: list) -> Optional[str]:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def answer(question: str, period: str, tenant: dict, history: list) -> dict:
+def answer(question: str, period: str, tenant: dict, history: list, live_xsoar: Optional[dict] = None) -> dict:
     """Answer a user question grounded on the tenant's live KPI snapshot."""
-    snap = build_snapshot(period, tenant)
+    snap = build_snapshot(period, tenant, live_xsoar)
     llm_status = llm_mod.status()
 
     llm_text = _llm_answer(question, snap, history) if llm_status["loaded"] else None
@@ -248,9 +270,9 @@ def answer(question: str, period: str, tenant: dict, history: list) -> dict:
 
 SUGGESTED_QUESTIONS = [
     "How is our MTTR trending this cycle?",
+    "Which rule has the highest false-positive rate?",
     "Where are the biggest MITRE ATT&CK coverage gaps?",
     "Which threat actors are most active right now?",
     "What's driving the SLA breach risk?",
     "Which playbooks give us the best automation ROI?",
-    "How does this tenant compare against peer benchmarks?",
 ]

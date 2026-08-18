@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { motion } from "framer-motion";
-import { Plus, Upload, Palette, Building2, Image as ImageIcon, Save, Trash2 } from "lucide-react";
+import { Plus, Upload, Palette, Building2, Image as ImageIcon, Save, Trash2, CalendarClock, Send } from "lucide-react";
 import { toast } from "sonner";
 import api from "@/api/client";
 import { useTenant } from "@/contexts/TenantContext";
@@ -32,6 +32,63 @@ export default function SettingsPage() {
   const logoInputRef = useRef(null);
   const csvInputRef = useRef(null);
   const [aiStatus, setAiStatus] = useState(null);
+
+  // ---- Scheduled email reports ----
+  const [schedules, setSchedules] = useState([]);
+  const [schedFreq, setSchedFreq] = useState("weekly");
+  const [schedPeriod, setSchedPeriod] = useState("monthly");
+  const [schedTenant, setSchedTenant] = useState("all");
+  const [schedRecipients, setSchedRecipients] = useState("");
+  const [schedSubject, setSchedSubject] = useState("");
+  const [schedBusy, setSchedBusy] = useState(false);
+
+  const loadSchedules = async () => {
+    try {
+      const { data } = await api.get("/reports/schedules");
+      setSchedules(data);
+    } catch (_) {}
+  };
+  useEffect(() => { loadSchedules(); }, []);
+
+  const createSchedule = async () => {
+    const recipients = schedRecipients.split(",").map((s) => s.trim()).filter(Boolean);
+    if (!recipients.length) { toast.error("Add at least one recipient email"); return; }
+    setSchedBusy(true);
+    try {
+      await api.post("/reports/schedules", {
+        tenant_id: schedTenant, period: schedPeriod, frequency: schedFreq,
+        recipients, subject: schedSubject || null,
+      });
+      toast.success("Report schedule created");
+      setSchedRecipients(""); setSchedSubject("");
+      loadSchedules();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Create failed");
+    } finally { setSchedBusy(false); }
+  };
+
+  const toggleSchedule = async (s) => {
+    try {
+      await api.patch(`/reports/schedules/${s.id}`, {
+        tenant_id: s.tenant_id, period: s.period, frequency: s.frequency,
+        recipients: s.recipients, subject: s.subject, enabled: !s.enabled,
+      });
+      loadSchedules();
+    } catch (e) { toast.error("Update failed"); }
+  };
+
+  const deleteSchedule = async (id) => {
+    try { await api.delete(`/reports/schedules/${id}`); loadSchedules(); toast.success("Schedule removed"); }
+    catch (e) { toast.error("Delete failed"); }
+  };
+
+  const runNow = async (id) => {
+    try {
+      const { data } = await api.post(`/reports/schedules/${id}/run-now`);
+      toast.success(`Report sent (${data.mode}) to ${(data.recipients || []).join(", ")}`);
+      loadSchedules();
+    } catch (e) { toast.error("Send failed"); }
+  };
 
   useEffect(() => {
     if (!selected && tenants.length) setSelected(tenants[0]);
@@ -158,7 +215,7 @@ export default function SettingsPage() {
           <div className="flex items-center gap-2">
             <span className={`h-2 w-2 rounded-full ${aiStatus.loaded ? "bg-emerald-500" : aiStatus.loading ? "bg-amber-500 animate-pulse" : "bg-rose-500"}`} />
             <span className="text-[10px] uppercase tracking-[0.2em] font-bold text-muted-foreground">
-              HuggingFace LLM
+              Local LLM · IRIS (Ollama)
             </span>
           </div>
           <div className="text-sm font-mono">{aiStatus.model}</div>
@@ -281,6 +338,125 @@ export default function SettingsPage() {
           </Card>
         )}
       </div>
+
+      {/* Scheduled email reports */}
+      <Card className="p-6 space-y-5" data-testid="report-schedules-card">
+        <div className="flex items-center gap-2">
+          <CalendarClock className="h-5 w-5 text-primary" />
+          <h2 className="text-xl font-bold tracking-tight" style={{ fontFamily: "var(--font-heading)" }}>
+            Scheduled Email Reports
+          </h2>
+        </div>
+        <p className="text-sm text-muted-foreground -mt-2">
+          Auto-email the PPTX deck weekly (Mon 08:00 UTC) or monthly (1st 08:00 UTC).
+          Delivery is console-logged unless SMTP is configured on the server.
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <div>
+            <Label>Tenant</Label>
+            <select
+              value={schedTenant}
+              onChange={(e) => setSchedTenant(e.target.value)}
+              className="mt-1.5 w-full h-10 rounded-md border border-border/60 bg-background px-3 text-sm"
+              data-testid="sched-tenant"
+            >
+              {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label>Frequency</Label>
+            <select
+              value={schedFreq}
+              onChange={(e) => setSchedFreq(e.target.value)}
+              className="mt-1.5 w-full h-10 rounded-md border border-border/60 bg-background px-3 text-sm"
+              data-testid="sched-frequency"
+            >
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          <div>
+            <Label>Report Period</Label>
+            <select
+              value={schedPeriod}
+              onChange={(e) => setSchedPeriod(e.target.value)}
+              className="mt-1.5 w-full h-10 rounded-md border border-border/60 bg-background px-3 text-sm"
+              data-testid="sched-period"
+            >
+              <option value="weekly">Weekly</option>
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <Label>Recipients (comma-separated)</Label>
+            <Input
+              value={schedRecipients}
+              onChange={(e) => setSchedRecipients(e.target.value)}
+              placeholder="ciso@acme.com, soc@acme.com"
+              className="mt-1.5"
+              data-testid="sched-recipients"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-[220px]">
+            <Label>Subject (optional)</Label>
+            <Input
+              value={schedSubject}
+              onChange={(e) => setSchedSubject(e.target.value)}
+              placeholder="Weekly SOC KPI Report"
+              className="mt-1.5"
+              data-testid="sched-subject"
+            />
+          </div>
+          <Button onClick={createSchedule} disabled={schedBusy} className="gap-2" data-testid="sched-create">
+            <Plus className="h-4 w-4" /> {schedBusy ? "Saving…" : "Add Schedule"}
+          </Button>
+        </div>
+
+        <div className="pt-3 border-t border-border/60 space-y-2" data-testid="sched-list">
+          {schedules.length === 0 && (
+            <div className="text-sm text-muted-foreground">No schedules yet — add one above.</div>
+          )}
+          {schedules.map((s) => (
+            <div
+              key={s.id}
+              className="flex flex-wrap items-center gap-3 rounded-md border border-border/60 px-3 py-2"
+              data-testid={`sched-row-${s.id}`}
+            >
+              <Badge variant={s.enabled ? "default" : "secondary"} className="text-[10px] uppercase">
+                {s.frequency}
+              </Badge>
+              <span className="text-sm font-medium">
+                {(tenants.find((t) => t.id === s.tenant_id) || {}).name || s.tenant_id}
+              </span>
+              <span className="text-xs text-muted-foreground">· {s.period}</span>
+              <span className="text-xs text-muted-foreground truncate max-w-[260px]">
+                → {s.recipients.join(", ")}
+              </span>
+              {s.last_run && (
+                <span className="text-[10px] text-muted-foreground">
+                  last run {new Date(s.last_run).toLocaleString()} ({s.last_status})
+                </span>
+              )}
+              <div className="ml-auto flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => runNow(s.id)} className="gap-1.5" data-testid={`sched-runnow-${s.id}`}>
+                  <Send className="h-3.5 w-3.5" /> Send now
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => toggleSchedule(s)} data-testid={`sched-toggle-${s.id}`}>
+                  {s.enabled ? "Pause" : "Resume"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => deleteSchedule(s.id)} data-testid={`sched-delete-${s.id}`}>
+                  <Trash2 className="h-4 w-4 text-rose-500" />
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
 
       {/* Add tenant dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>

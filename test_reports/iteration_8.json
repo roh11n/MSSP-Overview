@@ -1,0 +1,36 @@
+{
+  "summary": "Phase-6 verification PASSED for all three new features. Backend pytest (test_phase6.py): 10/10 green — Detection overlay returns xsoar_live=true with MITRE heatmap + rules[] (fp_rate/precision/recall) for tenant 'acme-corp' and correctly falls back to mock (no xsoar_live) for 'globalbank'; IRIS /copilot/chat with tenant_id=acme-corp answers the 'highest FP rate' question referencing Suspicious PowerShell (source='rule' fallback per PS — expected); Report schedules full CRUD works (POST/GET/PATCH/DELETE) and /run-now returns ran=true with mode='console' and the run is recorded in /api/email/history with a .pptx attachment. All 5 dashboards regress cleanly on tenant=all. Frontend Playwright (admin login → tenant switch to Acme → /detection → /settings → IRIS): 'Live · XSOAR' badge (det-xsoar-live) present, mitre-heatmap rendered with uploaded tactics (Execution 100% / Impact 75% / Initial Access 75% / Command and Control 50%), Rule Effectiveness table shows Suspicious PowerShell (tuning) 75% FP as highest, followed by DNS Tunneling 50%, Impossible Travel 33.3%, Ransomware File Ext 0%. Scheduled Email Reports card creates a schedule, sched-runnow-<id> executes (backend 200 ok), sched-toggle flips 'Pause'→'Resume', sched-delete removes the row. IRIS launcher opens the chat, FP-rate question returns an answer containing 'powershell', 'fp' and '%' (grounded on live_xsoar).",
+  "backend_issues": { "critical": [], "minor": [
+    {"endpoint": "PATCH /api/reports/schedules/{id}", "issue": "Requires full ReportScheduleBody (frequency/recipients mandatory) to toggle 'enabled'; a partial-patch shape would be more idiomatic but current UI sends full payload so behavior is correct."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Settings › Scheduled Email Reports", "issues": ["No visible success toast captured after Send-now (backend call succeeds and row updates last_run); consider surfacing a sonner/toaster confirmation for better UX. Not a blocker."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase6.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/test_smoke_phase5.py",
+    "/app/test_reports/pytest/phase6.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py PATCH /reports/schedules/{id} rebuilds updates dict from full ReportScheduleBody — this means the frontend must always send the complete schedule; a partial JSON-merge patch (Pydantic model_dump(exclude_unset=True)) would be cleaner and avoid accidental field resets.",
+    "server.py delete_report_schedule uses delete_many({id: ...}) — should be delete_one and return 404 if not found for API consistency (currently silently returns {deleted: true} for non-existent ids).",
+    "copilot.py fallback correctly reads snap['live_xsoar']['noisy_rules_by_fp'] and produces a deterministic answer; behavior is stable in preview (Ollama absent).",
+    "xsoar_ingest.compute_detection_overlay derives mitre_coverage as distinct_tactics/14 — matches PRD; overlay is only applied when data_status=='live'."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase6.py",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": { "backend": "100% (10/10 phase-6 + prior 52/52 remain green)", "frontend": "100% for the 3 new features" },
+  "test_credentials": "Admin admin@mssp-soc.io / Admin@2026! (validated). Tenant with live XSOAR data: acme-corp. Tenant without upload: globalbank.",
+  "seed_data_creation": "None — used pre-existing acme-corp XSOAR upload. Test schedules created and cleaned up within each test (TEST_ prefixed recipients/subject).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression suite: /app/backend/tests/backend_test.py + test_smoke_phase5.py + test_phase6.py. Phase-6 pytest ~2.5s. XSOAR sample sits under acme-corp; if the DB is wiped, re-upload via POST /api/upload/data?source=xsoar&tenant_id=acme-corp before running detection/IRIS live tests. IRIS source='rule' is expected (Ollama not deployed in preview)."
+}

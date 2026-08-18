@@ -42,6 +42,21 @@ OLLAMA_BASE_URL, OLLAMA_MODEL, CORS_ORIGINS. Frontend: REACT_APP_BACKEND_URL
 - `emergentintegrations` is unused by code but kept in requirements; the backend
   Dockerfile installs it via Emergent's extra index URL.
 
+## Phase 6 (2026-06) — live XSOAR wiring + scheduled reports
+- **Detection Engineering now data-driven:** `xsoar_ingest.compute_detection_overlay`
+  binds uploaded XSOAR *MITRE Tactic Name* / *MITRE Technique Name* columns to the
+  MITRE heat-map and derives the Rule Effectiveness table (triggers, FP%, precision,
+  recall, status) from `rule_name` + `close_reason`. Overlaid onto `/dashboard/detection-engineering`
+  only when live data exists (else mock). UI shows a "Live · XSOAR" badge.
+- **IRIS grounded on live XSOAR:** `copilot.build_snapshot(..., live_xsoar)` +
+  `/copilot/chat` inject live noisy-rule/FP + top-rule KPIs so users can ask
+  "which rule has the highest FP rate?". Rule-based fallback also answers it.
+- **Scheduled email reports:** `scheduler.py` (APScheduler) weekly (Mon 08:00 UTC) /
+  monthly (1st 08:00 UTC) cron auto-emails the PPTX. CRUD at `/api/reports/schedules`
+  + `/run-now`; managed in Settings › Scheduled Email Reports. Delivery is
+  console-mocked unless SMTP_* env is set. New dep: apscheduler==3.11.3.
+- Verified: testing agent iteration_8 — backend 10/10 (+52 regression), frontend 100%.
+
 ## Backlog / next
 - (Optional) MongoDB auth + TLS reverse proxy (Caddy) — documented in DEPLOYMENT.md.
 - (Optional) Recharts `ResponsiveContainer` width/height console warnings (cosmetic).

@@ -9,6 +9,7 @@ import base64
 import io
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -40,6 +41,7 @@ import recommendations
 import tenants as tenants_mod
 import ti_ingest
 import xsoar_ingest
+import scheduler as report_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("mssp-soc")
@@ -106,6 +108,15 @@ class IrisChatBody(BaseModel):
     period: Optional[str] = "monthly"
 
 
+class ReportScheduleBody(BaseModel):
+    tenant_id: Optional[str] = "all"
+    period: Optional[str] = "monthly"
+    frequency: str  # "weekly" | "monthly"
+    recipients: List[EmailStr]
+    subject: Optional[str] = None
+    enabled: Optional[bool] = True
+
+
 async def seed_tenants():
     """Seed the default tenants (idempotent)."""
     for t in tenants_mod.DEFAULT_TENANTS:
@@ -158,12 +169,16 @@ async def _startup():
     )
     logger.info("Startup complete: admin + persona users + tenants seeded.")
 
-    # Kick off HF model preload in background so /api/ai/* is fast on first call
+    # Kick off local LLM (Ollama) preload/pull in the background.
     llm_mod.preload_async()
+
+    await db.report_schedules.create_index("id", unique=True)
+    report_scheduler.start(db)
 
 
 @app.on_event("shutdown")
 async def _shutdown():
+    report_scheduler.shutdown()
     mongo_client.close()
 
 
@@ -353,7 +368,18 @@ async def dashboard_client(period: str = "monthly", tenant_id: str = "all", user
 
 @api.get("/dashboard/detection-engineering")
 async def dashboard_det(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
-    return tenants_mod.detection_engineering(_period(period), await get_tenant(tenant_id))
+    det = tenants_mod.detection_engineering(_period(period), await get_tenant(tenant_id))
+    overlay = await xsoar_ingest.compute_detection_overlay(db, tenant_id)
+    if overlay.get("data_status") == "live":
+        if overlay.get("mitre_heatmap"):
+            det["mitre_heatmap"] = overlay["mitre_heatmap"]
+            det["gap_analysis"]["techniques_covered"] = overlay["techniques_covered"]
+            det["quality"]["mitre_coverage"] = overlay["mitre_coverage"]
+        if overlay.get("rules"):
+            det["rules"] = overlay["rules"]
+        det["xsoar_live"] = True
+        det["xsoar_upload"] = overlay.get("upload")
+    return det
 
 
 @api.get("/dashboard/threat-intel")
@@ -558,6 +584,17 @@ async def copilot_chat(body: IrisChatBody, user=Depends(current_user_dep)):
     tenant = await get_tenant(body.tenant_id)
     session_id = body.session_id or str(ObjectId())
 
+    # Inject live XSOAR KPIs (rule FP rates, top rules) into IRIS grounding.
+    soc_live = await xsoar_ingest.compute_soc_manager(db, tenant_id=body.tenant_id)
+    live_xsoar = None
+    if soc_live.get("data_status") == "live":
+        live_xsoar = {
+            "data_status": "live",
+            "summary": soc_live.get("summary"),
+            "noisy_rules_by_fp": soc_live.get("noisy_rules"),
+            "top_rules": soc_live.get("top_rules"),
+        }
+
     # Load recent history for this session (last 10 messages)
     hist_cursor = db.iris_messages.find(
         {"session_id": session_id, "user_id": user["id"]},
@@ -565,7 +602,7 @@ async def copilot_chat(body: IrisChatBody, user=Depends(current_user_dep)):
     ).sort("created_at", -1).limit(10)
     history = list(reversed(await hist_cursor.to_list(10)))
 
-    result = iris.answer(body.message, p, tenant, history)
+    result = iris.answer(body.message, p, tenant, history, live_xsoar)
 
     now = datetime.now(timezone.utc).isoformat()
     await db.iris_messages.insert_many([
@@ -636,6 +673,72 @@ async def copilot_sessions(user=Depends(current_user_dep)):
         }
         for d in docs
     ]
+
+
+# ---------- Scheduled Reports ----------
+@api.get("/reports/schedules")
+async def list_report_schedules(user=Depends(current_user_dep)):
+    return await db.report_schedules.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+
+@api.post("/reports/schedules")
+async def create_report_schedule(body: ReportScheduleBody, user=Depends(current_user_dep)):
+    if body.frequency not in {"weekly", "monthly"}:
+        raise HTTPException(status_code=400, detail="frequency must be weekly or monthly")
+    _period(body.period)
+    if not body.recipients:
+        raise HTTPException(status_code=400, detail="At least one recipient required")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": body.tenant_id or "all",
+        "period": body.period or "monthly",
+        "frequency": body.frequency,
+        "recipients": [str(x) for x in body.recipients],
+        "subject": body.subject,
+        "enabled": bool(body.enabled),
+        "created_by": user.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_run": None,
+        "last_status": None,
+    }
+    await db.report_schedules.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/reports/schedules/{schedule_id}")
+async def update_report_schedule(schedule_id: str, body: ReportScheduleBody, user=Depends(current_user_dep)):
+    if body.frequency not in {"weekly", "monthly"}:
+        raise HTTPException(status_code=400, detail="frequency must be weekly or monthly")
+    _period(body.period)
+    updates = {
+        "tenant_id": body.tenant_id or "all",
+        "period": body.period or "monthly",
+        "frequency": body.frequency,
+        "recipients": [str(x) for x in body.recipients],
+        "subject": body.subject,
+        "enabled": bool(body.enabled),
+    }
+    r = await db.report_schedules.update_one({"id": schedule_id}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return await db.report_schedules.find_one({"id": schedule_id}, {"_id": 0})
+
+
+@api.delete("/reports/schedules/{schedule_id}")
+async def delete_report_schedule(schedule_id: str, user=Depends(current_user_dep)):
+    await db.report_schedules.delete_many({"id": schedule_id})
+    return {"deleted": True, "id": schedule_id}
+
+
+@api.post("/reports/schedules/{schedule_id}/run-now")
+async def run_report_schedule_now(schedule_id: str, user=Depends(current_user_dep)):
+    try:
+        res = await report_scheduler.run_now(db, schedule_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"ran": True, "mode": res.get("mode"), "delivered": res.get("delivered"),
+            "recipients": res.get("to")}
 
 
 # ---------- Health ----------

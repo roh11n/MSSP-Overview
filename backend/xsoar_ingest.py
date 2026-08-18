@@ -496,3 +496,95 @@ async def compute_executive_rollup(db, tenant_id: str) -> Dict[str, Any]:
         "incident_trend": incident_trend,
         "sla_trend": sla_trend,
     }
+
+
+
+# --- Detection Engineering overlay (MITRE heatmap + rule effectiveness) --
+
+# 14 MITRE ATT&CK Enterprise tactics — used to express live tactic coverage %.
+_MITRE_TACTICS_TOTAL = 14
+
+
+async def compute_detection_overlay(db, tenant_id: str) -> Dict[str, Any]:
+    """Derive the MITRE ATT&CK heat-map and rule-effectiveness KPIs directly
+    from uploaded XSOAR incidents (MITRE Tactic Name / MITRE Technique Name +
+    rule name + close reason). Returns data_status='empty' when nothing useful
+    can be built so the caller keeps the mock payload."""
+    rows = await _rows(db, tenant_id)
+    upload = await latest_upload(db, tenant_id)
+    if not rows:
+        return {"data_status": "empty"}
+
+    # ---- Heat-map: tactic -> technique -> hit count ----
+    tactic_map: Dict[str, Counter] = {}
+    for r in rows:
+        tac = r.get("mitre_tactic")
+        if not tac:
+            continue
+        tech = r.get("mitre_technique") or "Unspecified technique"
+        tactic_map.setdefault(tac, Counter())[tech] += 1
+
+    mitre_heatmap: List[Dict[str, Any]] = []
+    if tactic_map:
+        tactic_totals = {t: sum(c.values()) for t, c in tactic_map.items()}
+        max_total = max(tactic_totals.values()) or 1
+        for tac, techc in sorted(tactic_map.items(), key=lambda kv: -tactic_totals[kv[0]]):
+            techniques = [
+                {"name": (name or "Unspecified")[:42], "covered": True, "hits": hits}
+                for name, hits in techc.most_common(8)
+            ]
+            mitre_heatmap.append({
+                "tactic": tac[:34],
+                "coverage": round(100.0 * tactic_totals[tac] / max_total),
+                "techniques": techniques,
+            })
+
+    distinct_techniques = len({r.get("mitre_technique") for r in rows if r.get("mitre_technique")})
+    distinct_tactics = len(tactic_map)
+
+    # ---- Rule effectiveness from rule_name + close_reason ----
+    rule_stats: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        rn = r.get("rule_name")
+        if not rn:
+            continue
+        s = rule_stats.setdefault(rn, {"total": 0, "fp": 0, "tp": 0})
+        s["total"] += 1
+        cr = (r.get("close_reason") or "").lower()
+        if cr == "false positive":
+            s["fp"] += 1
+        elif "true" in cr or "resolved" in cr or "mitigated" in cr:
+            s["tp"] += 1
+
+    rules: List[Dict[str, Any]] = []
+    for rn, s in rule_stats.items():
+        fp_rate = _pct(s["fp"], s["total"])
+        tp_fp = s["tp"] + s["fp"]
+        precision = round(s["tp"] / tp_fp, 2) if tp_fp > 0 else None
+        recall = round(s["tp"] / s["total"], 2) if s["total"] > 0 else None
+        status = "tuning" if fp_rate >= 40 else ("active" if s["total"] >= 3 else "monitoring")
+        rules.append({
+            "name": rn[:80], "status": status, "triggers": s["total"],
+            "true_positives": s["tp"], "fp_rate": fp_rate,
+            "precision": precision, "recall": recall,
+        })
+    rules.sort(key=lambda x: -x["triggers"])
+    rules = rules[:16]
+
+    # Rules ranked by FP rate (min 3 incidents) — reused by IRIS.
+    noisy_rules = sorted(
+        [{"rule": r["name"], "total": r["triggers"], "fp": int(round(r["fp_rate"] * r["triggers"] / 100.0)),
+          "fp_pct": r["fp_rate"]} for r in rules if r["triggers"] >= 3],
+        key=lambda x: (-x["fp_pct"], -x["total"]),
+    )[:10]
+
+    return {
+        "data_status": "live",
+        "upload": upload,
+        "mitre_heatmap": mitre_heatmap,
+        "rules": rules,
+        "noisy_rules": noisy_rules,
+        "techniques_covered": distinct_techniques,
+        "distinct_tactics": distinct_tactics,
+        "mitre_coverage": round(100.0 * distinct_tactics / _MITRE_TACTICS_TOTAL, 1),
+    }

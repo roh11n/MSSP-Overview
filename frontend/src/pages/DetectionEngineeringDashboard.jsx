@@ -40,6 +40,12 @@ export default function DetectionEngineeringDashboard() {
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
             Detection quality, rule effectiveness and MITRE ATT&CK coverage.
           </p>
+          {data?.xsoar_live && (
+            <Badge variant="outline" className="mt-2 gap-1.5" data-testid="det-xsoar-live">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live · XSOAR{data.xsoar_upload?.filename ? ` · ${data.xsoar_upload.filename}` : ""}
+            </Badge>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <ExportActions period={period} />
