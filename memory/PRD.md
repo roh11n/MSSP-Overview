@@ -69,6 +69,12 @@ OLLAMA_BASE_URL, OLLAMA_MODEL, CORS_ORIGINS. Frontend: REACT_APP_BACKEND_URL
 - **Removed demo persona users** (only `admin@mssp-soc.io` seeded) and the login quick-login buttons.
 - **Removed test data**: acme-corp XSOAR upload, test schedules/emails/uploads. Demo tenants (Acme, GlobalBank) kept per user request.
 
+## Bug fixes
+- 2026-06: Threat-Intel (and all) uploads didn't show until a manual refresh — `UploadModal`
+  now calls `queryClient.invalidateQueries()` after a successful upload so dashboards refetch
+  immediately. Verified end-to-end (iteration_10): .xlsx TI upload flips the dashboard to live
+  with no page reload.
+
 ## Backlog / next
 - (Optional) MongoDB auth + TLS reverse proxy (Caddy) — documented in DEPLOYMENT.md.
 - (Optional) Recharts `ResponsiveContainer` width/height console warnings (cosmetic).

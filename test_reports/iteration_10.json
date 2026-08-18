@@ -1,0 +1,29 @@
+{
+  "summary": "Verified the React-Query cache invalidation bug fix for the Threat Intel upload flow. Backend contract confirmed via API (POST /api/upload/data?source=threat_intel returns rows=3, ti_row_count=3; GET /api/dashboard/threat-intel returns data_status='live', summary.total_advisories=3). Frontend Playwright e2e verified: from /threat-intel opened UploadModal, switched source to 'Threat Intel', uploaded /tmp/ti_sample.xlsx, clicked Ingest, closed modal — WITHOUT any page reload the dashboard automatically switched from empty state to LIVE: ti-empty-state removed, ti-data-source-chip visible (LIVE FROM UPLOAD), kpi-total-advisories shows 3. Primary user complaint is resolved by qc.invalidateQueries() in UploadModal.handleUpload. XSOAR CSV regression path could not be fully validated end-to-end because the sample CSV (/app/test_reports/upload_artifacts/xsoar_upload_smoke.csv) has non-standard columns and produces xsoar_row_count=0 (SOC Manager still empty); however the invalidation code path is source-agnostic (qc.invalidateQueries() with no key refreshes ALL queries), so the same fix applies. Backend + frontend data cleaned for all tenants after tests.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All dashboards (dev build)", "issues": ["React dev-time error overlay triggers on benign 'ResizeObserver loop completed with undelivered notifications' warnings emitted by Recharts. Not a production issue but is highly visible during preview; consider filtering ResizeObserver warnings via a window error handler or upgrading recharts."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/backend/tests/test_smoke_phase5.py"],
+  "action_items": [
+    "Optional: suppress ResizeObserver loop dev overlay to prevent it from covering the UI in the preview environment.",
+    "Optional: provide a realistic XSOAR CSV fixture so the SOC Manager regression path (source=xsoar makes data_status='live') can be end-to-end verified. Current /tmp/xsoar_sample.csv (incident_id,playbook,analyst) yields xsoar_row_count=0."
+  ],
+  "critical_code_review_comments": [
+    "UploadModal calls qc.invalidateQueries() with no arguments — this invalidates ALL React Query caches. Works correctly for the bug but is broad; could be scoped to affected keys (['ti'], ['soc-manager'], ['executive'], ['detection']) based on source for efficiency.",
+    "UploadModal reset() is only called when modal closes; if user re-opens with a stale success banner it can confuse — minor UX polish.",
+    "server.py /dashboard/soc-manager/data DELETE clears xsoar collections but there is no equivalent endpoint that clears both qradar+xsoar+ti in one call; not blocking."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@mssp-soc.io / Admin@2026! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Copied /app/test_reports/upload_artifacts/xsoar_upload_smoke.csv to /tmp/xsoar_sample.csv. All uploaded TI + XSOAR data for tenants all/globalbank/acme-corp deleted post-test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Primary bug (React Query cache invalidation after upload) is FIXED and verified end-to-end. Excel TI upload via UI now immediately drives the dashboard live without manual reload. If retesting XSOAR path, generate a CSV that matches xsoar_ingest expected schema (incidents/playbooks/analysts with proper columns) so xsoar_row_count > 0.",
+  "rca of the issue": "Root cause: UploadModal.handleUpload posted the file but never invalidated the React Query cache, so ThreatIntelDashboard's useQuery(['ti', period, tenantId]) held its previous 'empty' result until a manual browser refresh. Fix: import useQueryClient and call qc.invalidateQueries() after setResult(data) — verified: dashboard refetches, data_status flips to 'live', chip and KPI render. Reproduction (pre-fix): upload file → close modal → dashboard remains empty until F5. Mitigation (applied): invalidateQueries() in UploadModal ensures automatic refetch across all dashboards."
+}

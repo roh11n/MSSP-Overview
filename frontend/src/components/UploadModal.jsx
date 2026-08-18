@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Upload, FileSpreadsheet, X, Check } from "lucide-react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
@@ -21,6 +22,7 @@ export default function UploadModal({ open, onOpenChange }) {
   const [uploading, setUploading] = useState(false);
   const { tenantId, tenant } = useTenant();
   const inputRef = useRef(null);
+  const qc = useQueryClient();
 
   const reset = () => { setFile(null); setResult(null); };
 
@@ -36,6 +38,8 @@ export default function UploadModal({ open, onOpenChange }) {
         form,
       );
       setResult(data);
+      // Refresh every dashboard so the newly-ingested data shows immediately.
+      qc.invalidateQueries();
       const suffix = source === "threat_intel" && data.ti_row_count
         ? ` · ${data.ti_row_count} advisory rows bound to Threat Intelligence`
         : "";
