@@ -115,21 +115,3 @@ async def seed_admin(db):
             {"email": admin_email},
             {"$set": {"password_hash": hash_password(admin_password)}},
         )
-
-    # Seed persona demo users for role showcase
-    demo_users = [
-        ("soc.manager@mssp-soc.io", "SocManager@2026!", "SOC Manager", "soc_manager"),
-        ("client@mssp-soc.io", "Client@2026!", "Client Executive", "client"),
-        ("detection@mssp-soc.io", "Detection@2026!", "Detection Engineer", "detection_engineer"),
-        ("ti.analyst@mssp-soc.io", "TiAnalyst@2026!", "TI Analyst", "ti_analyst"),
-        ("automation@mssp-soc.io", "Automation@2026!", "Automation Engineer", "automation_engineer"),
-    ]
-    for email, pwd, name, role in demo_users:
-        if not await db.users.find_one({"email": email}):
-            await db.users.insert_one({
-                "email": email,
-                "password_hash": hash_password(pwd),
-                "name": name,
-                "role": role,
-                "created_at": now,
-            })

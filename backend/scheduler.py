@@ -15,6 +15,8 @@ import llm as llm_mod
 import pptx_export
 import recommendations
 import tenants as tenants_mod
+import ti_ingest
+import xsoar_ingest
 
 logger = logging.getLogger("mssp-soc.scheduler")
 
@@ -28,17 +30,57 @@ async def _get_tenant(db, tenant_id):
     return t
 
 
+async def build_bundle(db, period: str, tenant_id: str):
+    """Assemble the dashboards bundle + recommendations for PPTX/email, using
+    LIVE uploads (XSOAR + TI) where available and blank templates otherwise."""
+    tenant = await _get_tenant(db, tenant_id)
+    all_data = tenants_mod.all_dashboards(period, tenant)
+
+    roll = await xsoar_ingest.compute_executive_rollup(db, tenant_id)
+    overlay = await xsoar_ingest.compute_detection_overlay(db, tenant_id)
+    ti = await ti_ingest.compute_dashboard(db, tenant_id=tenant_id, period=period)
+    has_x = roll.get("data_status") == "live"
+    has_ti = ti.get("data_status") == "live"
+
+    if has_x or has_ti:
+        sla = roll.get("sla_compliance") or 0
+        fp = roll.get("false_positive_rate") or 0
+        auto = roll.get("automation_rate") or 0
+        mttr = roll.get("mttr_hours") or 0
+        det_cov = overlay.get("mitre_coverage") if overlay.get("data_status") == "live" else 0
+        ex = all_data["executive"]
+        ex.update({
+            "data_status": "live",
+            "health_score": round(max(0.0, min(100.0, 0.5 * sla + 0.3 * auto + 0.2 * det_cov)), 1),
+            "risk_score": round(max(0.0, min(100.0, 0.5 * fp + 0.3 * (100 - sla) + 0.2 * min(100, mttr))), 1),
+            "incidents": roll.get("incidents") or 0,
+            "sla_compliance": sla, "mttr_hours": mttr,
+            "detection_coverage": det_cov, "automation_rate": auto,
+            "advisories": ti["summary"]["total_advisories"] if has_ti else 0,
+            "false_positive_rate": fp,
+            "incident_trend": roll.get("incident_trend") or [],
+            "sla_trend": roll.get("sla_trend") or [],
+            "top_rule": roll.get("top_rule"), "top_mitre_tactic": roll.get("top_mitre_tactic"),
+            "top_threat_actor": roll.get("top_mitre_tactic") or "—", "top_targeted_asset": "—",
+        })
+
+    if overlay.get("data_status") == "live" and overlay.get("mitre_heatmap"):
+        det = all_data["detection"]
+        det["data_status"] = "live"
+        det["mitre_heatmap"] = overlay["mitre_heatmap"]
+        det["rules"] = overlay["rules"]
+        det["gap_analysis"]["techniques_covered"] = overlay["techniques_covered"]
+        det["quality"]["mitre_coverage"] = overlay["mitre_coverage"]
+
+    recs = recommendations.generate(all_data["executive"])
+    recs = llm_mod.enrich_recommendations(recs, all_data["executive"], max_llm=2)
+    return tenant, all_data, recs
+
+
 async def _send_one(db, sch: dict) -> dict:
     period = sch.get("period", "monthly")
     tenant_id = sch.get("tenant_id", "all")
-    tenant = await _get_tenant(db, tenant_id)
-
-    all_data = tenants_mod.all_dashboards(period, tenant)
-    recs = recommendations.generate(
-        all_data["executive"], all_data["soc_manager"], all_data["detection"],
-        all_data["threat_intel"], all_data["soar"],
-    )
-    recs = llm_mod.enrich_recommendations(recs, all_data["executive"], max_llm=2)
+    tenant, all_data, recs = await build_bundle(db, period, tenant_id)
     buf = pptx_export.build_pptx(tenant, period, all_data, recs)
 
     subject = sch.get("subject") or f"MSSP SOC Report — {tenant.get('name', 'All Tenants')} ({period})"

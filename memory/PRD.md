@@ -57,6 +57,18 @@ OLLAMA_BASE_URL, OLLAMA_MODEL, CORS_ORIGINS. Frontend: REACT_APP_BACKEND_URL
   console-mocked unless SMTP_* env is set. New dep: apscheduler==3.11.3.
 - Verified: testing agent iteration_8 — backend 10/10 (+52 regression), frontend 100%.
 
+## Phase 7 (2026-06) — removed dummy data (live-only dashboards)
+- **No mock KPI numbers anywhere.** `tenants.py` now returns zeroed blank templates
+  (schema preserved) instead of `mock_data`. All six dashboards are live-only:
+  Executive & Client are computed from XSOAR (+TI) via `xsoar_ingest.compute_client`
+  and `server._live_executive`; Detection from `compute_detection_overlay`; SOC/SOAR/TI
+  already live. Each returns `{data_status:"empty"}` with a UI empty-state until data is uploaded.
+- `recommendations.generate` rewritten to be live-executive-driven (returns [] when empty).
+- PPTX/scheduled reports use `scheduler.build_bundle` (live executive + detection overlay);
+  `pptx_export` chart helpers now render "No data" instead of crashing on blanks.
+- **Removed demo persona users** (only `admin@mssp-soc.io` seeded) and the login quick-login buttons.
+- **Removed test data**: acme-corp XSOAR upload, test schedules/emails/uploads. Demo tenants (Acme, GlobalBank) kept per user request.
+
 ## Backlog / next
 - (Optional) MongoDB auth + TLS reverse proxy (Caddy) — documented in DEPLOYMENT.md.
 - (Optional) Recharts `ResponsiveContainer` width/height console warnings (cosmetic).

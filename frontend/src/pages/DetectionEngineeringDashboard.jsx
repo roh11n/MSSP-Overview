@@ -20,6 +20,18 @@ import { cn } from "@/lib/utils";
 
 const fadeIn = { initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } };
 
+function DashEmpty() {
+  return (
+    <div className="rounded-xl border-2 border-dashed border-border/60 p-10 text-center bg-card/40" data-testid="detection-empty-state">
+      <h2 className="text-xl font-semibold tracking-tight">No live detection data for this tenant yet</h2>
+      <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">
+        Upload an XSOAR incident export (with MITRE Tactic / Technique + Rule Name + Close Reason columns)
+        on the SOC Manager page to populate the heat-map and rule effectiveness.
+      </p>
+    </div>
+  );
+}
+
 export default function DetectionEngineeringDashboard() {
   const [period, setPeriod] = useState("monthly");
   const { tenantId } = useTenant();
@@ -54,7 +66,8 @@ export default function DetectionEngineeringDashboard() {
       </div>
 
       {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-      {data && (
+      {data && data.data_status !== "live" && <DashEmpty />}
+      {data && data.data_status === "live" && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <KpiCard label="Detection Coverage" value={data.quality.detection_coverage} suffix="%" icon={Target} delta={2.4} testid="kpi-detection-cov" />

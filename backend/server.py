@@ -157,17 +157,9 @@ async def _startup():
         "## Admin\n"
         f"- Email: `{os.environ.get('ADMIN_EMAIL')}`\n"
         f"- Password: `{os.environ.get('ADMIN_PASSWORD')}`\n"
-        "- Role: `admin`\n\n"
-        "## Persona Demo Users\n"
-        "| Role | Email | Password |\n"
-        "|---|---|---|\n"
-        "| soc_manager | soc.manager@mssp-soc.io | SocManager@2026! |\n"
-        "| client | client@mssp-soc.io | Client@2026! |\n"
-        "| detection_engineer | detection@mssp-soc.io | Detection@2026! |\n"
-        "| ti_analyst | ti.analyst@mssp-soc.io | TiAnalyst@2026! |\n"
-        "| automation_engineer | automation@mssp-soc.io | Automation@2026! |\n"
+        "- Role: `admin`\n"
     )
-    logger.info("Startup complete: admin + persona users + tenants seeded.")
+    logger.info("Startup complete: admin + tenants seeded.")
 
     # Kick off local LLM (Ollama) preload/pull in the background.
     llm_mod.preload_async()
@@ -325,27 +317,58 @@ def _period(period: Optional[str]) -> str:
     return p
 
 
+async def _live_executive(p: str, tenant_id: str) -> dict:
+    """Assemble the Executive Overview purely from live uploads (XSOAR + TI +
+    detection overlay). Returns {'data_status': 'empty'} when nothing is uploaded."""
+    roll = await xsoar_ingest.compute_executive_rollup(db, tenant_id)
+    overlay = await xsoar_ingest.compute_detection_overlay(db, tenant_id)
+    ti = await ti_ingest.compute_dashboard(db, tenant_id=tenant_id, period=p)
+    has_xsoar = roll.get("data_status") == "live"
+    has_ti = ti.get("data_status") == "live"
+    if not has_xsoar and not has_ti:
+        return {"data_status": "empty", "period": p}
+
+    sla = roll.get("sla_compliance") or 0
+    fp = roll.get("false_positive_rate") or 0
+    auto = roll.get("automation_rate") or 0
+    mttr = roll.get("mttr_hours") or 0
+    det_cov = overlay.get("mitre_coverage") if overlay.get("data_status") == "live" else 0
+    health = round(max(0.0, min(100.0, 0.5 * sla + 0.3 * auto + 0.2 * det_cov)), 1)
+    risk = round(max(0.0, min(100.0, 0.5 * fp + 0.3 * (100 - sla) + 0.2 * min(100, mttr))), 1)
+
+    exec_payload = {
+        "data_status": "live",
+        "period": p,
+        "health_score": health,
+        "risk_score": risk,
+        "incidents": roll.get("incidents") or 0,
+        "offenses": 0,
+        "sla_compliance": sla,
+        "mttr_hours": mttr,
+        "detection_coverage": det_cov,
+        "automation_rate": auto,
+        "advisories": ti["summary"]["total_advisories"] if has_ti else 0,
+        "false_positive_rate": fp,
+        "top_threat_actor": roll.get("top_mitre_tactic") or "—",
+        "top_targeted_asset": "—",
+        "incident_trend": roll.get("incident_trend") or [],
+        "sla_trend": roll.get("sla_trend") or [],
+        "top_rule": roll.get("top_rule"),
+        "top_mitre_tactic": roll.get("top_mitre_tactic"),
+    }
+    if has_xsoar:
+        exec_payload["xsoar_live"] = True
+        exec_payload["xsoar_upload"] = roll.get("upload")
+    return exec_payload
+
+
 @api.get("/dashboard/executive")
 async def executive(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
     p = _period(period)
-    tenant = await get_tenant(tenant_id)
-    exec_d = tenants_mod.executive_overview(p, tenant)
-    soc = tenants_mod.soc_manager(p, tenant)
-    det = tenants_mod.detection_engineering(p, tenant)
-    ti = tenants_mod.threat_intelligence(p, tenant)
-    soar = tenants_mod.soar_automation(p, tenant)
-
-    # Overlay live XSOAR data when the tenant has an upload
-    xsoar_roll = await xsoar_ingest.compute_executive_rollup(db, tenant_id)
-    if xsoar_roll.get("data_status") == "live":
-        for key in ("incidents", "mttr_hours", "sla_compliance", "automation_rate",
-                    "top_rule", "top_mitre_tactic", "incident_trend", "sla_trend"):
-            if xsoar_roll.get(key) is not None:
-                exec_d[key] = xsoar_roll[key]
-        exec_d["xsoar_live"] = True
-        exec_d["xsoar_upload"] = xsoar_roll.get("upload")
-
-    recs = recommendations.generate(exec_d, soc, det, ti, soar)
+    exec_d = await _live_executive(p, tenant_id)
+    if exec_d.get("data_status") != "live":
+        return {"data_status": "empty", "period": p, "recommendations": []}
+    recs = recommendations.generate(exec_d)
     return {**exec_d, "recommendations": recs}
 
 
@@ -363,22 +386,38 @@ async def dashboard_soc_clear(tenant_id: str = "all", user=Depends(current_user_
 
 @api.get("/dashboard/client")
 async def dashboard_client(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
-    return tenants_mod.client_executive(_period(period), await get_tenant(tenant_id))
+    cl = await xsoar_ingest.compute_client(db, tenant_id)
+    if cl.get("data_status") != "live":
+        return {"data_status": "empty", "period": _period(period)}
+    ti = await ti_ingest.compute_dashboard(db, tenant_id=tenant_id, period=_period(period))
+    has_ti = ti.get("data_status") == "live"
+    cl["period"] = _period(period)
+    cl["threat_exposure"] = {
+        "total_advisories": ti["summary"]["total_advisories"] if has_ti else 0,
+        "threat_actors": [],
+        "malware": [],
+        "advisory_trend": (
+            [{"date": x["date"], "value": x["advisories"]} for x in ti.get("advisories_timeline", [])]
+            if has_ti else []
+        ),
+    }
+    return cl
 
 
 @api.get("/dashboard/detection-engineering")
 async def dashboard_det(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
-    det = tenants_mod.detection_engineering(_period(period), await get_tenant(tenant_id))
     overlay = await xsoar_ingest.compute_detection_overlay(db, tenant_id)
-    if overlay.get("data_status") == "live":
-        if overlay.get("mitre_heatmap"):
-            det["mitre_heatmap"] = overlay["mitre_heatmap"]
-            det["gap_analysis"]["techniques_covered"] = overlay["techniques_covered"]
-            det["quality"]["mitre_coverage"] = overlay["mitre_coverage"]
-        if overlay.get("rules"):
-            det["rules"] = overlay["rules"]
-        det["xsoar_live"] = True
-        det["xsoar_upload"] = overlay.get("upload")
+    if overlay.get("data_status") != "live" or not overlay.get("mitre_heatmap"):
+        return {"data_status": "empty", "period": _period(period)}
+    det = tenants_mod.detection_engineering(_period(period), await get_tenant(tenant_id))
+    det["data_status"] = "live"
+    det["mitre_heatmap"] = overlay["mitre_heatmap"]
+    det["rules"] = overlay["rules"]
+    det["gap_analysis"]["techniques_covered"] = overlay["techniques_covered"]
+    det["quality"]["mitre_coverage"] = overlay["mitre_coverage"]
+    det["quality"]["detection_coverage"] = overlay["mitre_coverage"]
+    det["xsoar_live"] = True
+    det["xsoar_upload"] = overlay.get("upload")
     return det
 
 
@@ -414,13 +453,10 @@ async def ai_status(user=Depends(current_user_dep)):
 @api.get("/ai/insights")
 async def ai_insights(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
     p = _period(period)
-    tenant = await get_tenant(tenant_id)
-    exec_d = tenants_mod.executive_overview(p, tenant)
-    soc = tenants_mod.soc_manager(p, tenant)
-    det = tenants_mod.detection_engineering(p, tenant)
-    ti = tenants_mod.threat_intelligence(p, tenant)
-    soar = tenants_mod.soar_automation(p, tenant)
-    recs = recommendations.generate(exec_d, soc, det, ti, soar)
+    exec_d = await _live_executive(p, tenant_id)
+    if exec_d.get("data_status") != "live":
+        return {"recommendations": [], "llm": llm_mod.status()}
+    recs = recommendations.generate(exec_d)
     enriched = llm_mod.enrich_recommendations(recs, exec_d, max_llm=3)
     return {"recommendations": enriched, "llm": llm_mod.status()}
 
@@ -516,10 +552,7 @@ async def upload_history(user=Depends(current_user_dep)):
 @api.get("/export/pptx")
 async def export_pptx(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
     p = _period(period)
-    tenant = await get_tenant(tenant_id)
-    all_data = tenants_mod.all_dashboards(p, tenant)
-    recs = recommendations.generate(all_data["executive"], all_data["soc_manager"], all_data["detection"], all_data["threat_intel"], all_data["soar"])
-    recs = llm_mod.enrich_recommendations(recs, all_data["executive"], max_llm=2)
+    tenant, all_data, recs = await report_scheduler.build_bundle(db, p, tenant_id)
     buf = pptx_export.build_pptx(tenant, p, all_data, recs)
     filename = f"MSSP_SOC_{tenant.get('id','all')}_{p}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.pptx"
     return StreamingResponse(
@@ -536,9 +569,7 @@ async def send_email(body: SendEmailBody, user=Depends(current_user_dep)):
     tenant = await get_tenant(body.tenant_id)
     attachments = []
     if body.attach_pptx:
-        all_data = tenants_mod.all_dashboards(p, tenant)
-        recs = recommendations.generate(all_data["executive"], all_data["soc_manager"], all_data["detection"], all_data["threat_intel"], all_data["soar"])
-        recs = llm_mod.enrich_recommendations(recs, all_data["executive"], max_llm=2)
+        _t, all_data, recs = await report_scheduler.build_bundle(db, p, body.tenant_id)
         buf = pptx_export.build_pptx(tenant, p, all_data, recs)
         attachments.append({
             "filename": f"MSSP_SOC_{tenant.get('id','all')}_{p}.pptx",

@@ -107,6 +107,18 @@ function RecPanel({ recs, onEnrich, aiLoading, aiEnriched }) {
   );
 }
 
+function DashEmpty({ title = "No live data yet" }) {
+  return (
+    <div className="rounded-xl border-2 border-dashed border-border/60 p-10 text-center bg-card/40" data-testid="dashboard-empty-state">
+      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+      <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">
+        This dashboard is driven entirely by your uploads. Upload XSOAR incident data
+        (SOC Manager / SOAR pages) and Threat-Intel data (Threat Intel page) to populate it.
+      </p>
+    </div>
+  );
+}
+
 export default function ExecutiveOverview() {
   const [period, setPeriod] = useState("monthly");
   const [aiEnriched, setAiEnriched] = useState(false);
@@ -171,7 +183,8 @@ export default function ExecutiveOverview() {
       </div>
 
       {isLoading && <div className="text-sm text-muted-foreground">Loading dashboards…</div>}
-      {data && (
+      {data && data.data_status !== "live" && <DashEmpty title="No live data for this tenant yet" />}
+      {data && data.data_status === "live" && (
         <>
           {/* Hero: two gauges + AI recs */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

@@ -9,14 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 
-const PERSONAS = [
-  { role: "admin", email: "admin@mssp-soc.io", pwd: "Admin@2026!", label: "Admin" },
-  { role: "soc_manager", email: "soc.manager@mssp-soc.io", pwd: "SocManager@2026!", label: "SOC Manager" },
-  { role: "client", email: "client@mssp-soc.io", pwd: "Client@2026!", label: "Client" },
-  { role: "detection_engineer", email: "detection@mssp-soc.io", pwd: "Detection@2026!", label: "Detection Eng" },
-  { role: "ti_analyst", email: "ti.analyst@mssp-soc.io", pwd: "TiAnalyst@2026!", label: "TI Analyst" },
-  { role: "automation_engineer", email: "automation@mssp-soc.io", pwd: "Automation@2026!", label: "Automation" },
-];
+const PERSONAS = [];
 
 export default function LoginPage() {
   const { user, login } = useAuth();
@@ -167,26 +160,6 @@ export default function LoginPage() {
               {busy ? "Signing in…" : "Sign in"}
             </Button>
           </form>
-
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-bold mb-3">
-              Quick persona login (demo)
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {PERSONAS.map((p) => (
-                <button
-                  key={p.role}
-                  onClick={() => quickLogin(p)}
-                  disabled={busy}
-                  className="text-left rounded-md border border-border/60 px-3 py-2 hover:border-primary/50 hover:bg-accent/50 transition-colors text-xs disabled:opacity-50"
-                  data-testid={`quick-login-${p.role}`}
-                >
-                  <div className="font-semibold">{p.label}</div>
-                  <div className="text-[10px] text-muted-foreground truncate">{p.email}</div>
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
     </div>

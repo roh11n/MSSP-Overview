@@ -16,6 +16,17 @@ import api from "@/api/client";
 
 const fadeIn = { initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } };
 
+function DashEmpty({ title = "No live data for this tenant yet" }) {
+  return (
+    <div className="rounded-xl border-2 border-dashed border-border/60 p-10 text-center bg-card/40" data-testid="client-empty-state">
+      <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+      <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">
+        Upload XSOAR incident data for this tenant (SOC Manager page) to populate the client scorecard.
+      </p>
+    </div>
+  );
+}
+
 export default function ClientDashboard() {
   const [period, setPeriod] = useState("monthly");
   const { tenantId } = useTenant();
@@ -41,7 +52,8 @@ export default function ClientDashboard() {
       </div>
 
       {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
-      {data && (
+      {data && data.data_status !== "live" && <DashEmpty />}
+      {data && data.data_status === "live" && (
         <>
           {/* Executive Scorecard */}
           <section>

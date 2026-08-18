@@ -588,3 +588,79 @@ async def compute_detection_overlay(db, tenant_id: str) -> Dict[str, Any]:
         "distinct_tactics": distinct_tactics,
         "mitre_coverage": round(100.0 * distinct_tactics / _MITRE_TACTICS_TOTAL, 1),
     }
+
+
+
+# --- Client Executive dashboard (live from XSOAR) -----------------------
+
+async def compute_client(db, tenant_id: str) -> Dict[str, Any]:
+    """Client-facing business-risk view derived from XSOAR incidents."""
+    rows = await _rows(db, tenant_id)
+    upload = await latest_upload(db, tenant_id)
+    if not rows:
+        return {"data_status": "empty", "upload": None}
+
+    total = len(rows)
+    closed = [r for r in rows if (r.get("status") or "").lower() == "closed"]
+    fp = sum(1 for r in rows if (r.get("close_reason") or "").lower() == "false positive")
+    sla_breached = sum(1 for r in rows if r.get("sla_breached") is True)
+    major = sum(1 for r in rows if _severity_norm(r.get("severity")) in ("Critical", "High"))
+    open_critical = sum(1 for r in rows if (r.get("status") or "").lower() != "closed"
+                        and _severity_norm(r.get("severity")) == "Critical")
+    mttr_h = round(_avg([r.get("mttr_sec") for r in rows]) / 3600.0, 2)
+    sla = round(100.0 - _pct(sla_breached, total), 1)
+    fp_rate = _pct(fp, len(closed))
+    breach_rate = _pct(sla_breached, total)
+    composite = round(min(100.0, fp_rate * 0.4 + breach_rate * 0.6), 1)
+
+    dest = Counter(r.get("destination_ip") for r in rows if r.get("destination_ip"))
+    top_assets = [{"asset": (k or "")[:24], "hits": v} for k, v in dest.most_common(6)]
+    src = Counter(r.get("source_ip") for r in rows if r.get("source_ip"))
+    top_sources = [{"country": (k or ""), "count": v} for k, v in src.most_common(7)]
+    phishing = sum(1 for r in rows if "phish" in (r.get("category") or "").lower())
+
+    # Daily trend buckets
+    by_day: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        occ = r.get("occurred")
+        if not occ:
+            continue
+        try:
+            key = pd.to_datetime(occ).strftime("%Y-%m-%d")
+        except Exception:
+            continue
+        s = by_day.setdefault(key, {"total": 0, "ok": 0, "auto": 0, "fp": 0})
+        s["total"] += 1
+        if r.get("sla_breached") is not True:
+            s["ok"] += 1
+        if r.get("auto_close") is True:
+            s["auto"] += 1
+        if (r.get("close_reason") or "").lower() == "false positive":
+            s["fp"] += 1
+    days = sorted(by_day.keys())[-30:]
+    sla_trend = [{"date": d, "value": _pct(by_day[d]["ok"], by_day[d]["total"])} for d in days]
+    auto_trend = [{"date": d, "value": _pct(by_day[d]["auto"], by_day[d]["total"])} for d in days]
+    fp_trend = [{"date": d, "value": _pct(by_day[d]["fp"], by_day[d]["total"])} for d in days]
+
+    return {
+        "data_status": "live",
+        "upload": upload,
+        "scorecard": {
+            "composite_risk_score": composite,
+            "client_risk_rank": 1,
+            "quarterly_sla": sla,
+            "major_p1_p2_incidents": major,
+            "yoy_incident_delta": 0,
+            "yoy_mttr_delta": 0,
+            "yoy_sla_delta": 0,
+        },
+        "business_risk": {
+            "top_assets": top_assets,
+            "top_sources": top_sources,
+            "phishing_incidents": phishing,
+            "avg_dwell_hours": mttr_h,
+            "repeat_incidents": 0,
+            "open_critical": open_critical,
+        },
+        "trends": {"sla": sla_trend, "automation": auto_trend, "coverage": [], "fp": fp_trend},
+    }

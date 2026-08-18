@@ -16,114 +16,74 @@ def _tag(priority: str) -> Dict:
     }[priority]
 
 
-def generate(exec_data: dict, soc: dict, det: dict, ti: dict, soar: dict) -> List[Dict]:
-    recs = []
+def generate(exec_data: dict, soc: dict = None, det: dict = None, ti: dict = None, soar: dict = None) -> List[Dict]:
+    """Live-data-driven recommendations. Reads only the executive payload so it
+    never depends on fabricated mock structures. Returns [] when there is no
+    live data to reason over."""
+    recs: List[Dict] = []
+    if not exec_data or exec_data.get("data_status") != "live":
+        return recs
 
-    sla = exec_data["sla_compliance"]
-    mttr = exec_data["mttr_hours"]
-    det_cov = exec_data["detection_coverage"]
-    auto = exec_data["automation_rate"]
-    fp = soc["detection_health"]["false_positive_rate"]
+    sla = exec_data.get("sla_compliance") or 0
+    mttr = exec_data.get("mttr_hours") or 0
+    det_cov = exec_data.get("detection_coverage") or 0
+    auto = exec_data.get("automation_rate") or 0
+    fp = exec_data.get("false_positive_rate") or 0
+    risk = exec_data.get("risk_score") or 0
+    top_rule = exec_data.get("top_rule")
+    top_tactic = exec_data.get("top_mitre_tactic")
 
-    if sla < 95:
+    if sla and sla < 95:
         recs.append({
-            "priority": "P1",
-            "tag": _tag("P1"),
-            "area": "SLA",
+            "priority": "P1", "tag": _tag("P1"), "area": "SLA",
             "title": f"SLA compliance at {sla}% — below 95% target",
-            "insight": (
-                f"Response SLA at {soc['sla']['response_sla']}% and resolution SLA at "
-                f"{soc['sla']['resolution_sla']}%. Top breach cause: "
-                f"{soc['sla']['breach_causes'][0]['cause']}."
-            ),
-            "action": "Re-balance L1 shift coverage and enable auto-escalation playbook after 15 min queue time.",
+            "insight": f"Live XSOAR SLA compliance is {sla}%. Breaches are eroding the contractual target.",
+            "action": "Re-balance L1 shift coverage and enable auto-escalation after 15 min queue time.",
         })
 
-    if mttr > 60:
+    if mttr and mttr > 60:
         recs.append({
-            "priority": "P2",
-            "tag": _tag("P2"),
-            "area": "Speed",
+            "priority": "P2", "tag": _tag("P2"), "area": "Speed",
             "title": f"MTTR trending high at {mttr}h",
-            "insight": (
-                f"Investigation time averaging {soc['speed_metrics']['investigation_time_hours']}h. "
-                f"Queue time at {soc['speed_metrics']['queue_time_min']} min."
-            ),
-            "action": "Deploy enrichment playbook (IOC + Asset + Identity context) at incident create-time to shave investigation.",
+            "insight": "Mean time to resolve is above the 60h watch-line based on live incident data.",
+            "action": "Deploy enrichment playbook (IOC + Asset + Identity) at incident create-time to shave investigation.",
         })
 
-    if fp > 25:
+    if fp and fp > 25:
         recs.append({
-            "priority": "P2",
-            "tag": _tag("P2"),
-            "area": "Detection",
+            "priority": "P2", "tag": _tag("P2"), "area": "Detection",
             "title": f"False-positive rate at {fp}% — tune noisy rules",
-            "insight": (
-                f"{soc['detection_health']['top_rules'][0]['rule']} triggers "
-                f"{soc['detection_health']['top_rules'][0]['triggers']} times with "
-                f"{soc['detection_health']['top_rules'][0]['fp_rate']}% FP."
-            ),
-            "action": "Tune top-3 high-FP rules with allowlist enrichment; expected 30–40% noise reduction.",
+            "insight": (f"Noisiest rule: {top_rule}." if top_rule else "Several rules show high false-positive rates."),
+            "action": "Tune top high-FP rules with allowlist enrichment; expected 30–40% noise reduction.",
         })
 
-    if det_cov < 80:
+    if det_cov and det_cov < 80:
         recs.append({
-            "priority": "P3",
-            "tag": _tag("P3"),
-            "area": "Coverage",
+            "priority": "P3", "tag": _tag("P3"), "area": "Coverage",
             "title": f"MITRE ATT&CK coverage at {det_cov}% — expand detection surface",
-            "insight": (
-                f"{det['gap_analysis']['techniques_missing']} techniques uncovered. "
-                f"Top opportunity: {det['gap_analysis']['new_opportunities'][0]}."
-            ),
-            "action": "Prioritize Initial Access & Credential Access tactic gaps; ship 3 new rules this sprint.",
+            "insight": (f"Most-active tactic in live data: {top_tactic}." if top_tactic else "Several ATT&CK tactics have no detections yet."),
+            "action": "Prioritize the uncovered tactics; ship new detections this sprint.",
         })
 
-    if auto < 70:
+    if auto and auto < 70:
         recs.append({
-            "priority": "P3",
-            "tag": _tag("P3"),
-            "area": "Automation",
+            "priority": "P3", "tag": _tag("P3"), "area": "Automation",
             "title": f"Automation rate at {auto}% — automate top manual flows",
-            "insight": (
-                f"Manual closures at {soar['efficiency']['manual_closures']}. "
-                f"ROI on existing automation: {soar['efficiency']['automation_roi_pct']}%."
-            ),
+            "insight": "A large share of incidents are still closed manually.",
             "action": "Convert 'Phishing Triage' and 'Failed Login Cooldown' to full auto-remediation.",
         })
 
-    top_actor = ti["landscape"]["threat_actors"][0]
-    recs.append({
-        "priority": "P2",
-        "tag": _tag("P2"),
-        "area": "Threat Intel",
-        "title": f"{top_actor['name']} activity elevated",
-        "insight": (
-            f"{ti['landscape']['total_advisories']} advisories this period. "
-            f"IOC hit-rate at {ti['effectiveness']['ioc_match_rate']}%."
-        ),
-        "action": "Push actor TTP hunt-pack to detection engineering + notify high-risk clients in briefing.",
-    })
-
-    if exec_data["risk_score"] > 40:
+    if risk and risk > 40:
         recs.append({
-            "priority": "P1",
-            "tag": _tag("P1"),
-            "area": "Risk",
-            "title": f"Composite risk elevated ({exec_data['risk_score']})",
-            "insight": (
-                f"Health score at {exec_data['health_score']}. Top targeted asset: "
-                f"{exec_data['top_targeted_asset']}."
-            ),
-            "action": "Convene weekly risk review; freeze non-critical changes on top-3 assets.",
+            "priority": "P1", "tag": _tag("P1"), "area": "Risk",
+            "title": f"Composite risk elevated ({risk})",
+            "insight": f"Health score at {exec_data.get('health_score')}. Driven by FP/SLA/MTTR signals.",
+            "action": "Convene weekly risk review; freeze non-critical changes on top assets.",
         })
 
-    # Positive advisory
     if sla >= 97 and auto >= 70:
         recs.append({
-            "priority": "P4",
-            "tag": _tag("P4"),
-            "area": "Health",
+            "priority": "P4", "tag": _tag("P4"), "area": "Health",
             "title": "SOC operating within all executive KPIs",
             "insight": f"SLA {sla}% · Automation {auto}% · Coverage {det_cov}%.",
             "action": "Maintain cadence. Reallocate 10% capacity to proactive threat hunting.",

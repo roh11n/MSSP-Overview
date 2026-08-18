@@ -82,53 +82,52 @@ def _scale_dict(d: dict, factor: float, skip_keys=("period", "top_threat_actor",
     return out
 
 
+def _blank(o):
+    """Deep-zero a structure: numbers→0, strings→'', lists→[], dict keys kept.
+    Used so dashboards carry NO fabricated data — only live uploads populate them."""
+    if isinstance(o, bool):
+        return False
+    if isinstance(o, (int, float)):
+        return 0
+    if isinstance(o, str):
+        return ""
+    if isinstance(o, list):
+        return []
+    if isinstance(o, dict):
+        return {k: _blank(v) for k, v in o.items()}
+    return None
+
+
+def _blank_like(period: str, mock_fn):
+    b = _blank(mock_fn(period))
+    if isinstance(b, dict):
+        b["period"] = period
+        b["data_status"] = "empty"
+    return b
+
+
 def executive_overview(period: str, tenant: dict):
-    base = mock_data.executive_overview(period)
-    if not tenant or tenant.get("id") == "all":
-        return base
-    f_vol = _tenant_factor(tenant, "vol")
-    f_risk = tenant.get("risk_modifier", 1.0)
-    base["incidents"] = _apply_num(base["incidents"], f_vol)
-    base["offenses"] = _apply_num(base["offenses"], f_vol)
-    base["mttr_hours"] = round(base["mttr_hours"] * f_risk, 1)
-    base["risk_score"] = round(min(100, base["risk_score"] * f_risk), 1)
-    base["health_score"] = round(max(0, base["health_score"] / f_risk if f_risk else base["health_score"]), 1)
-    base["sla_compliance"] = round(min(100, base["sla_compliance"] / (f_risk ** 0.2)), 1)
-    base["advisories"] = _apply_num(base["advisories"], f_vol)
-    base["tenant"] = {"id": tenant["id"], "name": tenant["name"], "domain": tenant["domain"]}
-    return base
+    return _blank_like(period, mock_data.executive_overview)
 
 
 def soc_manager(period: str, tenant: dict):
-    base = mock_data.soc_manager(period)
-    if not tenant or tenant.get("id") == "all":
-        return base
-    f = _tenant_factor(tenant, "soc")
-    base["incident_ops"] = _scale_dict(base["incident_ops"], f)
-    base["sla"]["breaches"] = _apply_num(base["sla"]["breaches"], f)
-    return base
+    return _blank_like(period, mock_data.soc_manager)
 
 
 def client_executive(period: str, tenant: dict):
-    base = mock_data.client_executive(period)
-    if not tenant or tenant.get("id") == "all":
-        return base
-    f = _tenant_factor(tenant, "client")
-    base["business_risk"]["phishing_incidents"] = _apply_num(base["business_risk"]["phishing_incidents"], f)
-    base["business_risk"]["repeat_incidents"] = _apply_num(base["business_risk"]["repeat_incidents"], f)
-    return base
+    return _blank_like(period, mock_data.client_executive)
 
 
 def detection_engineering(period: str, tenant: dict):
-    return mock_data.detection_engineering(period)
+    return _blank_like(period, mock_data.detection_engineering)
 
 
 def threat_intelligence(period: str, tenant: dict):
-    return mock_data.threat_intelligence(period)
+    return _blank_like(period, mock_data.threat_intelligence)
 
 
 def soar_automation(period: str, tenant: dict):
-    return mock_data.soar_automation(period)
+    return _blank_like(period, mock_data.soar_automation)
 
 
 def all_dashboards(period: str, tenant: dict):

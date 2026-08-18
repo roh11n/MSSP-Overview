@@ -439,8 +439,15 @@ def _donut(slide, x, y, size, *, value, label, color=CORP):
 # --- Native line chart -----
 def _line_chart(slide, x, y, w, h, *, series_map, accent=CORP, title=None):
     d = CategoryChartData()
-    first = next(iter(series_map))
-    d.categories = [pt["date"] for pt in series_map[first]]
+    first = next(iter(series_map)) if series_map else None
+    cats = [pt["date"] for pt in series_map[first]] if first else []
+    if not cats:
+        if title:
+            _chart_title(slide, x, y - 0.4, w, title)
+        _text(slide, x, y + h / 2 - 0.15, w, 0.3, "No data", size=9,
+              color=INK_MUTED, align=PP_ALIGN.CENTER)
+        return
+    d.categories = cats
     for name, pts in series_map.items():
         d.add_series(name, tuple(p["value"] for p in pts))
     cs = slide.shapes.add_chart(
@@ -472,6 +479,12 @@ def _line_chart(slide, x, y, w, h, *, series_map, accent=CORP, title=None):
 def _column_chart(slide, x, y, w, h, *, categories, values, accent=CORP, title=None,
                   point_colors=None):
     d = CategoryChartData()
+    if not list(categories):
+        if title:
+            _chart_title(slide, x, y - 0.4, w, title)
+        _text(slide, x, y + h / 2 - 0.15, w, 0.3, "No data", size=9,
+              color=INK_MUTED, align=PP_ALIGN.CENTER)
+        return
     d.categories = list(categories)
     d.add_series("v", tuple(values))
     cs = slide.shapes.add_chart(
@@ -502,6 +515,12 @@ def _column_chart(slide, x, y, w, h, *, categories, values, accent=CORP, title=N
 
 def _bar_chart(slide, x, y, w, h, *, categories, values, accent=CORP, title=None):
     d = CategoryChartData()
+    if not list(categories):
+        if title:
+            _chart_title(slide, x, y - 0.4, w, title)
+        _text(slide, x, y + h / 2 - 0.15, w, 0.3, "No data", size=9,
+              color=INK_MUTED, align=PP_ALIGN.CENTER)
+        return
     d.categories = list(categories)
     d.add_series("v", tuple(values))
     cs = slide.shapes.add_chart(
@@ -526,6 +545,12 @@ def _bar_chart(slide, x, y, w, h, *, categories, values, accent=CORP, title=None
 def _stacked_column(slide, x, y, w, h, *, categories, series_map, colors=None,
                     title=None):
     d = CategoryChartData()
+    if not list(categories):
+        if title:
+            _chart_title(slide, x, y - 0.4, w, title)
+        _text(slide, x, y + h / 2 - 0.15, w, 0.3, "No data", size=9,
+              color=INK_MUTED, align=PP_ALIGN.CENTER)
+        return
     d.categories = list(categories)
     for name, values in series_map.items():
         d.add_series(name, tuple(values))
@@ -1042,10 +1067,12 @@ def _slide_detection(prs, brand, det_data):
     # Gap summary right-aligned mini KPIs — inline text
     covered = det_data["gap_analysis"]["techniques_covered"]
     missing = det_data["gap_analysis"]["techniques_missing"]
+    _opps = det_data["gap_analysis"].get("new_opportunities") or []
+    _top_opp = _opps[0] if _opps else "n/a"
     _text(
         slide, MARGIN_L, 5.95, CONTENT_W, 0.3,
         f"{covered} techniques covered   ·   {missing} techniques missing   ·   "
-        f"Top opportunity: {det_data['gap_analysis']['new_opportunities'][0]}",
+        f"Top opportunity: {_top_opp}",
         size=10, color=INK_MUTED,
     )
 

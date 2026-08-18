@@ -1,0 +1,31 @@
+{
+  "summary": "Phase-7 (dummy-data removal) verification PASSED end-to-end. Backend pytest test_live_only.py: 22/22 green — (1) admin login works, all three persona logins (soc.manager / analyst / ciso) return 401; (2) empty-state contract holds: /api/dashboard/{executive,client,detection-engineering,soc-manager,soar-automation} return data_status='empty' for tenants 'all' and 'globalbank', /api/ai/insights.recommendations==[], executive.recommendations==[], /api/dashboard/threat-intel total_advisories==0; (3) live path: uploading /tmp/xsoar_sample.csv as source=xsoar to tenant acme-corp flips executive/client/detection to data_status='live' with populated incidents/kpis, non-empty recommendations, mitre_heatmap, and a 'Suspicious PowerShell' rule in rules[]; (4) /api/export/pptx returns 200 with a valid ~PK-signature .pptx for tenant='all' (empty, ~5–60KB) AND for tenant='acme-corp' (live); (5) Scheduled report full CRUD works — POST /api/reports/schedules, POST /run-now returns 200 with mode='console', /api/email/history records a .pptx attachment, DELETE cleans up; (6) IRIS /copilot/chat with tenant_id=globalbank (no data) returns 200 with source='rule' and no crash. Cleanup: acme-corp XSOAR data deleted post-test (verified GET executive?tenant_id=acme-corp → data_status=empty). Frontend Playwright: login page has NO persona/quick-login buttons (all five persona terms absent from DOM), persona credentials fail (stays on /login), admin credentials succeed and redirect to /. On tenant 'all', all five persona dashboards render the correct testid empty state: dashboard-empty-state (/), client-empty-state (/client), detection-empty-state (/detection), soc-empty-state (/soc-manager), soar-empty-state (/soar). /threat-intel shows 'No threat-intel data uploaded yet' with 'Upload Threat Intel File' CTA — no fabricated KPI numbers anywhere.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_live_only.py",
+    "/app/test_reports/pytest/live_only.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "tenants._blank / _blank_like templating is clean and consistent — all five dashboard fns return data_status='empty' with zeroed scalar fields and empty lists so the UI's DashEmpty guard works uniformly.",
+    "server.py _live_executive helper cleanly gates on xsoar upload presence per tenant; recommendations.generate() correctly returns [] when the executive snapshot is empty (verified: /api/ai/insights and executive.recommendations both empty on globalbank).",
+    "pptx_export chart helpers handle empty categories gracefully — 'No data' placeholder produces a valid pptx for tenant='all' (200, PK signature) with no 500s.",
+    "auth.seed_admin only seeds admin@mssp-soc.io; persona user documents are absent — login endpoint returns 401 for former personas as expected.",
+    "Minor consistency: /api/dashboard/threat-intel uses namespaced path (good) while some earlier dashboards omit the /dashboard prefix in older tests — path is stable now; not a bug, just documentation-worthy."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_live_only.py",
+    "/app/test_reports/iteration_9.json"
+  ],
+  "success_rate": { "backend": "100% (22/22 test_live_only + prior 62/62 regression suite unaffected)", "frontend": "100% for the dummy-data-removal scope" },
+  "test_credentials": "Admin admin@mssp-soc.io / Admin@2026! (validated). Persona accounts REMOVED and confirmed rejected (401).",
+  "seed_data_creation": "None persisted. XSOAR CSV was uploaded to acme-corp during TestLivePathAfterUpload and TestPPTXExport, then deleted by autouse cleanup fixture; post-run GET /api/dashboard/executive?tenant_id=acme-corp returns data_status='empty'. All test schedules and email history entries were deleted or prefixed TEST_.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression suite path: /app/backend/tests/{backend_test.py, test_smoke_phase5.py, test_phase6.py, test_live_only.py}. IMPORTANT: pytest requires REACT_APP_BACKEND_URL to be exported in the shell (BASE_URL is read from env with no default) — run: `export REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d= -f2)` before pytest. The autouse cleanup fixture in test_live_only.py wipes acme-corp XSOAR data at teardown, so tests are re-runnable. IRIS source='rule' is expected (Ollama not deployed in preview). Frontend empty-state testids to look for: dashboard-empty-state, client-empty-state, detection-empty-state, soc-empty-state, soar-empty-state."
+}
