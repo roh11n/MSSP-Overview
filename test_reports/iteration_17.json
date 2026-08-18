@@ -1,0 +1,23 @@
+{
+  "summary": "Verified all 3 fixes for iteration_17 on tenant 'globalbank' using /tmp/xsoar_sev.csv. Backend pytest: 4/4 pass (severity_distribution=[High:5, Medium:2, Low:2] only; business_risk.repeat_incidents=6; scorecard.yoy_incident_delta=50.0, yoy_mttr_delta=0.0, yoy_sla_delta=50.0; empty tenant returns data_status=empty). Frontend UI verified: /client shows kpi-repeat-inc=6, kpi-yoy-inc=+50%, kpi-yoy-mttr=0%, kpi-yoy-sla=+50% (previously all 0). /soc-manager Severity Mix donut renders only High/Medium/Low legend entries; numeric '10175' and Unknown/Critical/Info slices absent, no grey zero slice. Regression: single-tenant 'all' data untouched; empty tenant fallback intact. Cleanup executed via DELETE /api/dashboard/soc-manager/data?tenant_id=globalbank (verified data_status=empty afterwards).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_severity_repeat_yoy.py",
+    "/app/test_reports/pytest/severity_repeat_yoy.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "ClientDashboard.jsx YoY cards use `intent='negative'` unconditionally on YoY Incidents & MTTR; an increase in incidents is negative but +50% MTTR could also be negative while a decrease in incidents (e.g. -20%) should visually be positive. Consider dynamic intent based on sign/metric.",
+    "compute_client keys scorecard fields as yoy_* but the delta is month-over-month (latest present vs previous present month), not year-over-year. Field name is misleading; consider renaming to mom_* or documenting semantics in API/UI copy.",
+    "_severity_norm falls back to `s.title()` for unmapped severities (e.g. '10175' -> '10175'). Filter in compute_soc_manager drops them, but compute_client still uses raw _severity_norm output for `major` and `open_critical` counts — safe today but any future consumer of severity buckets should share the whitelist."
+  ],
+  "updated_files": ["/app/backend/tests/test_severity_repeat_yoy.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@mssp-soc.io / Admin@2026!",
+  "seed_data_creation": "Uploaded /tmp/xsoar_sev.csv (10 rows) into tenant 'globalbank' via /api/upload/data?source=xsoar. Deleted after tests via /api/dashboard/soc-manager/data. Tenant 'all' xsoar/ti/rules data untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Severity Mix filter (High/Medium/Low with count>0), Repeat Incidents duplicate-occurrence count, and month-over-month yoy_* deltas are all live and green on both API and UI. Tenant switching in UI is driven by localStorage key 'mssp_tenant' (not URL query params) — set that before navigating in Playwright.",
+  "rca of the issue": "N/A — verification pass; underlying fixes (E1) work as designed."
+}

@@ -269,7 +269,11 @@ async def compute_soc_manager(db, tenant_id: str) -> Dict[str, Any]:
 
     # Severity mix
     sev_c: Counter = Counter(_severity_norm(r.get("severity")) for r in rows)
-    severity_distribution = [{"severity": k, "count": v} for k, v in sev_c.most_common() if k != "Unknown"] or [{"severity": k, "count": v} for k, v in sev_c.most_common()]
+    # Only surface the three standard buckets with data (drop grey zero / numeric / Unknown)
+    severity_distribution = [
+        {"severity": k, "count": sev_c.get(k, 0)}
+        for k in ("High", "Medium", "Low") if sev_c.get(k, 0) > 0
+    ]
 
     # Close reason mix
     cr_c: Counter = Counter((r.get("close_reason") or "Unresolved") for r in closed)
@@ -642,6 +646,41 @@ async def compute_client(db, tenant_id: str) -> Dict[str, Any]:
     auto_trend = [{"date": d, "value": _pct(by_day[d]["auto"], by_day[d]["total"])} for d in days]
     fp_trend = [{"date": d, "value": _pct(by_day[d]["fp"], by_day[d]["total"])} for d in days]
 
+    # Repeat incidents = duplicate occurrences of the same incident name/rule
+    name_counts = Counter(
+        (r.get("name") or r.get("rule_name") or "").strip().lower()
+        for r in rows if (r.get("name") or r.get("rule_name"))
+    )
+    repeat_incidents = sum(c - 1 for c in name_counts.values() if c > 1)
+
+    # Period-over-period deltas (latest vs previous month present in the data)
+    by_month: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        occ = r.get("occurred")
+        if not occ:
+            continue
+        try:
+            mk = pd.to_datetime(occ).strftime("%Y-%m")
+        except Exception:
+            continue
+        m = by_month.setdefault(mk, {"count": 0, "mttr": [], "ok": 0})
+        m["count"] += 1
+        if r.get("mttr_sec") is not None:
+            m["mttr"].append(r.get("mttr_sec"))
+        if r.get("sla_breached") is not True:
+            m["ok"] += 1
+    yoy_inc = yoy_mttr = yoy_sla = 0.0
+    months = sorted(by_month.keys())
+    if len(months) >= 2:
+        cur, prev = by_month[months[-1]], by_month[months[-2]]
+        yoy_inc = _pct(cur["count"] - prev["count"], prev["count"]) if prev["count"] else 0.0
+        cur_m = round(_avg(cur["mttr"]) / 3600.0, 2)
+        prev_m = round(_avg(prev["mttr"]) / 3600.0, 2)
+        yoy_mttr = _pct(cur_m - prev_m, prev_m) if prev_m else 0.0
+        cur_sla = _pct(cur["ok"], cur["count"])
+        prev_sla = _pct(prev["ok"], prev["count"])
+        yoy_sla = round(cur_sla - prev_sla, 1)
+
     return {
         "data_status": "live",
         "upload": upload,
@@ -650,16 +689,16 @@ async def compute_client(db, tenant_id: str) -> Dict[str, Any]:
             "client_risk_rank": 1,
             "quarterly_sla": sla,
             "major_p1_p2_incidents": major,
-            "yoy_incident_delta": 0,
-            "yoy_mttr_delta": 0,
-            "yoy_sla_delta": 0,
+            "yoy_incident_delta": yoy_inc,
+            "yoy_mttr_delta": yoy_mttr,
+            "yoy_sla_delta": yoy_sla,
         },
         "business_risk": {
             "top_assets": top_assets,
             "top_sources": top_sources,
             "phishing_incidents": phishing,
             "avg_dwell_hours": mttr_h,
-            "repeat_incidents": 0,
+            "repeat_incidents": repeat_incidents,
             "open_critical": open_critical,
         },
         "trends": {"sla": sla_trend, "automation": auto_trend, "coverage": [], "fp": fp_trend},
