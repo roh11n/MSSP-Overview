@@ -863,6 +863,88 @@ async def run_report_schedule_now(schedule_id: str, user=Depends(current_user_de
             "recipients": res.get("to")}
 
 
+# ---------- Comparison / Snapshots ----------
+async def _snapshot_kpis(period: str, tenant_id: str) -> dict:
+    """Capture a flat, comparable KPI set across all dashboards (live values)."""
+    exec_d = await _live_executive(period, tenant_id)
+    xsoar_rows = await xsoar_ingest._rows(db, tenant_id)
+    det = await rules_ingest.compute_detection(db, tenant_id, xsoar_rows)
+    ti = await ti_ingest.compute_dashboard(db, tenant_id=tenant_id, period=period)
+    overlay = await xsoar_ingest.compute_detection_overlay(db, tenant_id)
+
+    q = det.get("quality", {}) if det.get("data_status") == "live" else {}
+    re = det.get("rule_effectiveness", {}) if det.get("data_status") == "live" else {}
+    exl = exec_d if exec_d.get("data_status") == "live" else {}
+
+    return {
+        "incidents": exl.get("incidents", 0),
+        "sla_compliance": exl.get("sla_compliance", 0),
+        "mttr_hours": exl.get("mttr_hours", 0),
+        "automation_rate": exl.get("automation_rate", 0),
+        "risk_score": exl.get("risk_score", 0),
+        "health_score": exl.get("health_score", 0),
+        "false_positive_rate": exl.get("false_positive_rate", 0),
+        "advisories": (ti["summary"]["total_advisories"] if ti.get("data_status") == "live" else 0),
+        "mitre_coverage": q.get("mitre_coverage", overlay.get("mitre_coverage", 0) if overlay.get("data_status") == "live" else 0),
+        "detection_coverage": q.get("detection_coverage", exl.get("detection_coverage", 0)),
+        "quality_score": q.get("quality_score", 0),
+        "rules_triggered": re.get("triggered_rules", 0),
+        "total_rules": re.get("total_rules", 0),
+    }
+
+
+@api.post("/comparison/snapshot")
+async def create_snapshot(period: str = "weekly", tenant_id: str = "all", label: Optional[str] = None,
+                          user=Depends(current_user_dep)):
+    if period not in ("weekly", "monthly", "quarterly"):
+        raise HTTPException(status_code=400, detail="period must be weekly, monthly or quarterly")
+    p = period
+    kpis = await _snapshot_kpis(_period(p), tenant_id)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "tenant_id": tenant_id or "all",
+        "period": p,
+        "label": label,
+        "kpis": kpis,
+        "created_by": user.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.snapshots.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/comparison/snapshots")
+async def list_snapshots(period: str = "weekly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    return await db.snapshots.find(
+        {"tenant_id": tenant_id or "all", "period": period}, {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+
+
+@api.get("/comparison/compare")
+async def compare_snapshots(period: str = "weekly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    snaps = await db.snapshots.find(
+        {"tenant_id": tenant_id or "all", "period": period}, {"_id": 0}
+    ).sort("created_at", -1).to_list(2)
+    if not snaps:
+        return {"period": period, "current": None, "previous": None, "deltas": {}}
+    current = snaps[0]
+    previous = snaps[1] if len(snaps) > 1 else None
+    deltas = {}
+    for k, cur in current["kpis"].items():
+        prev = (previous["kpis"].get(k) if previous else None)
+        delta = round(cur - prev, 2) if prev is not None else None
+        pct = (round(100.0 * delta / prev, 1) if (prev not in (None, 0) and delta is not None) else None)
+        deltas[k] = {"current": cur, "previous": prev, "delta": delta, "pct": pct}
+    return {"period": period, "current": current, "previous": previous, "deltas": deltas}
+
+
+@api.delete("/comparison/snapshot/{snapshot_id}")
+async def delete_snapshot(snapshot_id: str, user=Depends(current_user_dep)):
+    await db.snapshots.delete_many({"id": snapshot_id})
+    return {"deleted": True, "id": snapshot_id}
+
+
 # ---------- Health ----------
 @api.get("/")
 async def root():

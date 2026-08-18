@@ -88,6 +88,15 @@ OLLAMA_BASE_URL, OLLAMA_MODEL, CORS_ORIGINS. Frontend: REACT_APP_BACKEND_URL
 - Detection endpoint composes rules + XSOAR overlay + log-validation; empty-state when none.
 - Verified iteration_13: backend 8/8, frontend 100%.
 
+## Phase 9 (2026-06) — Comparison / Snapshots tab
+- New `/comparison` page (nav-comparison) with Weekly / Monthly / Quarterly sub-tabs.
+- "Take Snapshot" captures a flat 13-KPI snapshot of the whole console (live) per tenant+period
+  → `db.snapshots`. Each new snapshot auto-compares with the previous one (delta + %),
+  with direction-aware colouring. Full snapshot history per period with delete.
+- Backend: POST/GET `/comparison/snapshot(s)`, GET `/comparison/compare` (2 latest),
+  DELETE `/comparison/snapshot/{id}`; invalid period → 400.
+- Verified iteration_16: backend 9/9, frontend 100% (period validation + IRIS-overlap fixes).
+
 ## Backlog / next
 - (Optional) MongoDB auth + TLS reverse proxy (Caddy) — documented in DEPLOYMENT.md.
 - (Optional) Recharts `ResponsiveContainer` width/height console warnings (cosmetic).

@@ -13,6 +13,7 @@ import ClientDashboard from "@/pages/ClientDashboard";
 import DetectionEngineeringDashboard from "@/pages/DetectionEngineeringDashboard";
 import ThreatIntelDashboard from "@/pages/ThreatIntelDashboard";
 import SoarAutomationDashboard from "@/pages/SoarAutomationDashboard";
+import ComparisonDashboard from "@/pages/ComparisonDashboard";
 import SettingsPage from "@/pages/SettingsPage";
 
 function ThemedToaster() {
@@ -35,6 +36,7 @@ function App() {
                 <Route path="/detection" element={<ProtectedRoute><Layout><DetectionEngineeringDashboard /></Layout></ProtectedRoute>} />
                 <Route path="/threat-intel" element={<ProtectedRoute><Layout><ThreatIntelDashboard /></Layout></ProtectedRoute>} />
                 <Route path="/soar" element={<ProtectedRoute><Layout><SoarAutomationDashboard /></Layout></ProtectedRoute>} />
+                <Route path="/comparison" element={<ProtectedRoute><Layout><ComparisonDashboard /></Layout></ProtectedRoute>} />
                 <Route path="/settings" element={<ProtectedRoute><Layout><SettingsPage /></Layout></ProtectedRoute>} />
               </Routes>
             </TenantProvider>

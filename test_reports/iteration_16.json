@@ -1,0 +1,21 @@
+{
+  "summary": "Re-test of iteration_15 fixes for Comparison feature. FIX 1 (backend period validation): POST /api/comparison/snapshot now returns 400 for period=yearly and 200 for weekly/monthly/quarterly; no invalid records leaked in any period list. FIX 2 (IRIS overlap): floating IRIS widget now collapsed to a bottom-right pill; real (non-force) click on history-delete-weekly-0 succeeded and removed the row. Full regression flow works: nav-comparison -> 3 tabs -> take 2 weekly snapshots -> compare-summary-weekly + compare-grid-weekly render with deltas, baseline badge shown on first snapshot, per-period isolation confirmed (monthly snapshot did NOT appear in weekly list). 9/9 backend pytest cases pass. All test-created snapshots cleaned up via API; tenant 'all' uploads preserved.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_comparison.py",
+    "/app/test_reports/pytest/comparison_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "DELETE /api/comparison/snapshot/{id} still has no tenant/ownership check — any authenticated user can delete any snapshot. Non-blocking but should be addressed if multi-tenant scoping matters.",
+    "compare_snapshots always compares two latest records regardless of period semantics; label says 'weekly comparison' but delta reflects whatever cadence the user snapshots at. Consider surfacing this in copy."
+  ],
+  "updated_files": ["/app/backend/tests/test_comparison.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin@mssp-soc.io / Admin@2026!",
+  "seed_data_creation": "None persisted. All snapshots created during this test were deleted via API at end (verified 0 remaining across weekly/monthly/quarterly). Tenant 'all' rules/xsoar/logval data untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Comparison feature fully green. Both iteration_15 fixes verified: (1) 400 on invalid period, (2) pb-28 on ComparisonDashboard means IRIS floating widget no longer overlaps snapshot history delete icons. Only remaining code-review notes are: no ownership check on DELETE snapshot, and compare label vs actual snapshot cadence."
+}

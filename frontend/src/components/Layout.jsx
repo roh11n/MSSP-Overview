@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from "react-router-dom";
 import {
-  Activity, Shield, Users, Radar, Target, Cog, Upload, Sun, Moon, LogOut, Menu, Settings,
+  Activity, Shield, Users, Radar, Target, Cog, Upload, Sun, Moon, LogOut, Menu, Settings, GitCompare,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +24,7 @@ const NAV = [
   { to: "/detection", label: "Detection Engineering", icon: Radar, testid: "nav-detection" },
   { to: "/threat-intel", label: "Threat Intelligence", icon: Target, testid: "nav-threat-intel" },
   { to: "/soar", label: "SOAR / Automation", icon: Cog, testid: "nav-soar" },
+  { to: "/comparison", label: "Comparison", icon: GitCompare, testid: "nav-comparison" },
   { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings" },
 ];
 
