@@ -1,0 +1,34 @@
+{
+  "summary": "Detection Engineering enhancement verified end-to-end. Backend: 8/8 pytest cases pass (empty-state → rules upload → live dashboard → xsoar overlay → logval pie → cleanup). GET /api/dashboard/detection-engineering?tenant_id=acme-corp returns data_status=live with quality.detection_coverage=99.9, use_case_coverage=93.2, mitre_coverage=92.9, quality_score=97.7, atlas_coverage=null and rule_effectiveness.total_rules=1526, triggered_rules=8, avg_triggers≈11.2, bands.above_avg=3, logval_total=309, priority_breakdown populated. UI: upload modal exposes new sources (Rule Catalog / Log Validation) with dedicated hints; all coverage KPI cards render numeric values while kpi-atlas shows 'N/A · Live'; MITRE heatmap paints all 12 tactics with technique tiles+hit counts; StatChip re-triggered=8, re-above=3, re-near=0, re-nottriggered=1518, first re-row-0 visible; Log Source Priority pie renders; globalbank tenant shows detection-empty-state; success toasts include tenant name (e.g. 'Ingested 309 rows into Detection Engineering (Log Priority) for Acme Corporation'). DB cleaned via DELETE endpoints after tests.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Detection Engineering (all charts on load)", "issues": ["Recharts warnings 'The width(-1) and height(-1) of chart should be greater than 0' printed on initial mount before ResponsiveContainer measures parent (benign, charts eventually render)."]},
+      {"screen": "UploadModal result panel", "issues": ["`result` state is preserved across close/reopen only via reset() on close. Works correctly, but if a user re-opens the modal mid-upload the previous 'Bound to dashboard: NN rows → ...' banner may briefly show until the new API response replaces it (minor UX polish)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_detection_rules.py",
+    "/app/test_reports/pytest/detection_rules.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "rules_ingest.compute_detection: rule/name matching normalises via _norm_key (alphanumeric-lowercase) — resilient to spacing/case differences between XSOAR incident 'Rule Name' and catalog 'Rule Name'. Verified 90 XSOAR rows → 8 catalog rules matched, avg_triggers=11.2, above_avg=3.",
+    "quality.atlas_coverage explicitly set to None so UI can render 'N/A' — correct per requirement (ATLAS not derivable from the catalog).",
+    "logval_ingest normalises Essential/Selective/Redundant/Undefined case-insensitively via _KNOWN dict and title-cases unknown values — matches 'Priority values are case-normalized' requirement.",
+    "server.upload_data still stores the QRadar file but sets bound_rows=0 with a clear warning — good honest feedback pattern extended to the new sources.",
+    "rules_ingest.parse_rows correctly prefers the catalog sheet (Rule Name + ATT&CK columns) with a fallback to the first sheet containing 'rule name' — robust to multi-sheet xlsx workbooks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_detection_rules.py (new)"
+  ],
+  "success_rate": { "backend": "100% (8/8)", "frontend": "100% (all detection-engineering flows exercised)" },
+  "test_credentials": "admin@mssp-soc.io / Admin@2026!",
+  "seed_data_creation": "None; used existing fixtures /tmp/rules.xlsx (~1526 catalog rows), /tmp/xsoar_rules_match.csv (90 XSOAR rows referencing 8 catalog rules), /tmp/logval.xlsx (~309 priority rows). Tenant 'acme-corp'. DB cleaned via DELETE /api/dashboard/detection/rules-data, /api/dashboard/detection/logval-data, /api/dashboard/soc-manager/data.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Detection Engineering enhancement (rule catalog + xsoar match + log-validation) is fully working. Backend test file: /app/backend/tests/test_detection_rules.py (8 tests). Cleanup is idempotent — safe to re-run. Recharts width(-1)/height(-1) warnings on initial mount are pre-existing and benign.",
+  "rca of the issue": "N/A — no regressions or new bugs found."
+}

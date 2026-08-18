@@ -46,10 +46,21 @@ export default function UploadModal({ open, onOpenChange }) {
           `Stored ${data.rows} rows from ${data.filename}, but QRadar uploads don't drive dashboards yet — use XSOAR or Threat Intel.`
         );
       } else {
-        const bound = source === "threat_intel" ? (data.ti_row_count ?? 0) : (data.xsoar_row_count ?? 0);
-        const label = source === "threat_intel" ? "Threat Intelligence" : "SOC / Detection / Executive";
+        const boundMap = {
+          threat_intel: data.ti_row_count ?? 0,
+          xsoar: data.xsoar_row_count ?? 0,
+          rules: data.rules_row_count ?? 0,
+          log_validation: data.logval_row_count ?? 0,
+        };
+        const labelMap = {
+          threat_intel: "Threat Intelligence",
+          xsoar: "SOC / Detection / Executive",
+          rules: "Detection Engineering (MITRE + Rule Effectiveness)",
+          log_validation: "Detection Engineering (Log Priority)",
+        };
+        const bound = boundMap[source] ?? 0;
         if (bound > 0) {
-          toast.success(`Ingested ${bound} rows into ${label} for ${tName}`);
+          toast.success(`Ingested ${bound} rows into ${labelMap[source]} for ${tName}`);
         } else {
           toast.error(
             `0 rows matched the expected columns — nothing was added. Check your file's headers.`
@@ -89,6 +100,8 @@ export default function UploadModal({ open, onOpenChange }) {
                 <SelectItem value="qradar">QRadar (Offenses / Events / Rules)</SelectItem>
                 <SelectItem value="xsoar">XSOAR (Incidents / Playbooks / Analysts)</SelectItem>
                 <SelectItem value="threat_intel">Threat Intel (Advisories / CVE / IOC)</SelectItem>
+                <SelectItem value="rules">Rule Catalog (Detection Rules + ATT&CK)</SelectItem>
+                <SelectItem value="log_validation">Log Validation (Priority)</SelectItem>
               </SelectContent>
             </Select>
             {source === "threat_intel" && (
@@ -99,6 +112,16 @@ export default function UploadModal({ open, onOpenChange }) {
             {source === "xsoar" && (
               <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] text-muted-foreground leading-relaxed" data-testid="upload-hint-xsoar">
                 <span className="font-semibold text-foreground">Expected columns:</span> Name, Severity, Status, Close Reason, Occurred, Closed, Rule Name, MITRE Tactic Name, MITRE Technique Name, Auto Close, SLA Breached. Drives SOC Manager, Detection &amp; Executive for tenant <span className="font-semibold text-foreground">{tenant?.name || "All Tenants"}</span>.
+              </div>
+            )}
+            {source === "rules" && (
+              <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] text-muted-foreground leading-relaxed" data-testid="upload-hint-rules">
+                <span className="font-semibold text-foreground">Expected columns:</span> Rule Name, Rule ID, Rule Description, Applicable Log Sources, ATT&amp;CK Tactic, ATT&amp;CK Technique (tactics/techniques may be ';'-separated). Drives MITRE coverage, coverage KPIs &amp; Rule Effectiveness for tenant <span className="font-semibold text-foreground">{tenant?.name || "All Tenants"}</span>.
+              </div>
+            )}
+            {source === "log_validation" && (
+              <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] text-muted-foreground leading-relaxed" data-testid="upload-hint-logval">
+                <span className="font-semibold text-foreground">Expected column:</span> Priority (e.g. Essential / Selective / Redundant / Undefined). Renders the Log Priority pie on Detection Engineering.
               </div>
             )}
             {source === "qradar" && (

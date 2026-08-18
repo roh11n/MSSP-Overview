@@ -75,6 +75,19 @@ OLLAMA_BASE_URL, OLLAMA_MODEL, CORS_ORIGINS. Frontend: REACT_APP_BACKEND_URL
   immediately. Verified end-to-end (iteration_10): .xlsx TI upload flips the dashboard to live
   with no page reload.
 
+## Phase 8 (2026-06) — Detection Engineering: rule catalog + log validation
+- New upload sources `rules` (rule catalog) and `log_validation` (Priority) with ingest
+  modules `rules_ingest.py` / `logval_ingest.py` and DELETE endpoints.
+- **Rule Effectiveness**: XSOAR incident rule/name matched (normalised) against catalog
+  `Rule Name` → triggers per rule; average threshold splits rules into
+  above-avg / near-avg / below-avg / not-triggered (StatChips + table on /detection).
+- **MITRE coverage** heat-map + coverage KPIs from catalog ATT&CK Tactic/Technique
+  (';'-separated supported). detection_coverage=%mapped, use_case_coverage=%with log source,
+  mitre_coverage=distinct tactics/14, quality_score=composite. ATLAS not derivable → N/A.
+- **Log Priority pie** from the Log Validation `Priority` column.
+- Detection endpoint composes rules + XSOAR overlay + log-validation; empty-state when none.
+- Verified iteration_13: backend 8/8, frontend 100%.
+
 ## Backlog / next
 - (Optional) MongoDB auth + TLS reverse proxy (Caddy) — documented in DEPLOYMENT.md.
 - (Optional) Recharts `ResponsiveContainer` width/height console warnings (cosmetic).

@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Crosshair, GitBranch, Target, TrendingDown } from "lucide-react";
+import { Crosshair, GitBranch, Target, TrendingDown, Upload } from "lucide-react";
 import KpiCard from "@/components/KpiCard";
 import ChartCard from "@/components/ChartCard";
 import TimeTabs from "@/components/TimeTabs";
 import ExportActions from "@/components/ExportActions";
+import UploadModal from "@/components/UploadModal";
+import { Button } from "@/components/ui/button";
 import { useTenant } from "@/contexts/TenantContext";
 import MitreHeatmap from "@/components/MitreHeatmap";
 import { Badge } from "@/components/ui/badge";
@@ -14,19 +16,43 @@ import {
 } from "@/components/ui/table";
 import {
   ResponsiveContainer, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip,
+  PieChart, Pie, Cell, Legend,
 } from "recharts";
 import api from "@/api/client";
 import { cn } from "@/lib/utils";
 
 const fadeIn = { initial: { opacity: 0, y: 12 }, animate: { opacity: 1, y: 0 } };
 
+const PALETTE = ["#3B82F6", "#8B5CF6", "#10B981", "#F59E0B", "#EF4444", "#06B6D4"];
+const PRIORITY_COLORS = { Essential: "#10B981", Selective: "#3B82F6", Redundant: "#F59E0B", Undefined: "#94A3B8" };
+const BAND_LABEL = { above_avg: "Above avg", near_avg: "Near avg", below_avg: "Below avg", not_triggered: "Not triggered" };
+const BAND_STYLE = {
+  above_avg: "border-rose-500/40 text-rose-500",
+  near_avg: "border-amber-500/40 text-amber-500",
+  below_avg: "border-sky-500/40 text-sky-500",
+  not_triggered: "border-slate-500/40 text-muted-foreground",
+};
+
+function StatChip({ label, value, tone, testid }) {
+  const tones = {
+    emerald: "text-emerald-500", rose: "text-rose-500", amber: "text-amber-500", slate: "text-muted-foreground",
+  };
+  return (
+    <div className="rounded-lg border border-border/60 bg-card/40 px-3 py-2" data-testid={testid}>
+      <div className={cn("text-2xl font-bold tabular", tones[tone])}>{value}</div>
+      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
 function DashEmpty() {
   return (
     <div className="rounded-xl border-2 border-dashed border-border/60 p-10 text-center bg-card/40" data-testid="detection-empty-state">
       <h2 className="text-xl font-semibold tracking-tight">No live detection data for this tenant yet</h2>
       <p className="text-sm text-muted-foreground mt-2 max-w-xl mx-auto">
-        Upload an XSOAR incident export (with MITRE Tactic / Technique + Rule Name + Close Reason columns)
-        on the SOC Manager page to populate the heat-map and rule effectiveness.
+        Upload a <span className="font-semibold text-foreground">Rule Catalog</span> (MITRE coverage + rule effectiveness),
+        an <span className="font-semibold text-foreground">XSOAR</span> export (rule triggers), and/or a
+        <span className="font-semibold text-foreground"> Log Validation</span> file (priority pie) via the Upload button.
       </p>
     </div>
   );
@@ -34,6 +60,7 @@ function DashEmpty() {
 
 export default function DetectionEngineeringDashboard() {
   const [period, setPeriod] = useState("monthly");
+  const [uploadOpen, setUploadOpen] = useState(false);
   const { tenantId } = useTenant();
   const { data, isLoading } = useQuery({
     queryKey: ["det-eng", period, tenantId],
@@ -60,10 +87,15 @@ export default function DetectionEngineeringDashboard() {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
+          <Button variant="outline" size="sm" className="gap-2" onClick={() => setUploadOpen(true)} data-testid="det-upload-btn">
+            <Upload className="h-4 w-4" /> Upload
+          </Button>
           <ExportActions period={period} />
           <TimeTabs value={period} onChange={setPeriod} />
         </div>
       </div>
+
+      <UploadModal open={uploadOpen} onOpenChange={setUploadOpen} />
 
       {isLoading && <div className="text-sm text-muted-foreground">Loading…</div>}
       {data && data.data_status !== "live" && <DashEmpty />}
@@ -73,7 +105,7 @@ export default function DetectionEngineeringDashboard() {
             <KpiCard label="Detection Coverage" value={data.quality.detection_coverage} suffix="%" icon={Target} delta={2.4} testid="kpi-detection-cov" />
             <KpiCard label="Use Case Coverage" value={data.quality.use_case_coverage} suffix="%" delta={1.1} testid="kpi-usecase-cov" />
             <KpiCard label="MITRE Coverage" value={data.quality.mitre_coverage} suffix="%" testid="kpi-mitre-cov" />
-            <KpiCard label="ATLAS Coverage" value={data.quality.atlas_coverage} suffix="%" testid="kpi-atlas" />
+            <KpiCard label="ATLAS Coverage" value={data.quality.atlas_coverage ?? "N/A"} suffix={data.quality.atlas_coverage == null ? "" : "%"} testid="kpi-atlas" />
             <KpiCard label="Quality Score" value={data.quality.quality_score} testid="kpi-quality-score" />
           </div>
 
@@ -141,6 +173,62 @@ export default function DetectionEngineeringDashboard() {
             </ChartCard>
           </div>
 
+          {data.priority_breakdown && (
+            <ChartCard title="Log Source Priority" subtitle={`Log validation · ${data.logval_total} sources`} testid="chart-log-priority">
+              <div className="h-[300px]" data-testid="log-priority-pie">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={data.priority_breakdown} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} label={(e) => `${e.name}: ${e.value}`}>
+                      {data.priority_breakdown.map((entry, i) => (
+                        <Cell key={entry.name} fill={PRIORITY_COLORS[entry.name] || PALETTE[i % PALETTE.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </ChartCard>
+          )}
+
+          {data.rule_effectiveness ? (
+            <ChartCard
+              title="Rule Effectiveness"
+              subtitle={`${data.rule_effectiveness.total_rules} rules · avg ${data.rule_effectiveness.avg_triggers} triggers`}
+              testid="table-rules"
+            >
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <StatChip label="Triggered" value={data.rule_effectiveness.triggered_rules} tone="emerald" testid="re-triggered" />
+                <StatChip label="Above Avg" value={data.rule_effectiveness.bands.above_avg} tone="rose" testid="re-above" />
+                <StatChip label="Near Avg" value={data.rule_effectiveness.bands.near_avg} tone="amber" testid="re-near" />
+                <StatChip label="Not Triggered" value={data.rule_effectiveness.not_triggered_rules} tone="slate" testid="re-nottriggered" />
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Rule</TableHead>
+                    <TableHead>Rule ID</TableHead>
+                    <TableHead className="text-right">Triggers</TableHead>
+                    <TableHead>Vs Avg</TableHead>
+                    <TableHead>ATT&CK Tactics</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.rule_effectiveness.rules.map((r, i) => (
+                    <TableRow key={`${r.rule_id}-${i}`} data-testid={`re-row-${i}`}>
+                      <TableCell className="font-medium max-w-[340px] truncate">{r.name}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{r.rule_id}</TableCell>
+                      <TableCell className="text-right tabular">{r.triggers}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={cn("text-[10px]", BAND_STYLE[r.band])}>{BAND_LABEL[r.band]}</Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground truncate max-w-[220px]">{(r.tactics || []).join(", ") || "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </ChartCard>
+          ) : (
           <ChartCard title="Rule Effectiveness" subtitle="Precision · Recall · FP" testid="table-rules">
             <Table>
               <TableHeader>
@@ -175,6 +263,7 @@ export default function DetectionEngineeringDashboard() {
               </TableBody>
             </Table>
           </ChartCard>
+          )}
         </>
       )}
     </motion.div>

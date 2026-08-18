@@ -41,6 +41,8 @@ import recommendations
 import tenants as tenants_mod
 import ti_ingest
 import xsoar_ingest
+import rules_ingest
+import logval_ingest
 import scheduler as report_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -406,18 +408,41 @@ async def dashboard_client(period: str = "monthly", tenant_id: str = "all", user
 
 @api.get("/dashboard/detection-engineering")
 async def dashboard_det(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    p = _period(period)
+    xsoar_rows = await xsoar_ingest._rows(db, tenant_id)
+    rules_res = await rules_ingest.compute_detection(db, tenant_id, xsoar_rows)
     overlay = await xsoar_ingest.compute_detection_overlay(db, tenant_id)
-    if overlay.get("data_status") != "live" or not overlay.get("mitre_heatmap"):
-        return {"data_status": "empty", "period": _period(period)}
-    det = tenants_mod.detection_engineering(_period(period), await get_tenant(tenant_id))
+    logval = await logval_ingest.compute(db, tenant_id)
+
+    has_rules = rules_res.get("data_status") == "live"
+    has_overlay = overlay.get("data_status") == "live" and overlay.get("mitre_heatmap")
+    has_logval = logval.get("data_status") == "live"
+    if not (has_rules or has_overlay or has_logval):
+        return {"data_status": "empty", "period": p}
+
+    det = tenants_mod.detection_engineering(p, await get_tenant(tenant_id))
     det["data_status"] = "live"
-    det["mitre_heatmap"] = overlay["mitre_heatmap"]
-    det["rules"] = overlay["rules"]
-    det["gap_analysis"]["techniques_covered"] = overlay["techniques_covered"]
-    det["quality"]["mitre_coverage"] = overlay["mitre_coverage"]
-    det["quality"]["detection_coverage"] = overlay["mitre_coverage"]
-    det["xsoar_live"] = True
-    det["xsoar_upload"] = overlay.get("upload")
+
+    if has_rules:
+        # Rule catalog drives MITRE coverage + rule effectiveness
+        det["mitre_heatmap"] = rules_res["mitre_heatmap"]
+        det["quality"] = rules_res["quality"]
+        det["gap_analysis"]["techniques_covered"] = rules_res["techniques_covered"]
+        det["gap_analysis"]["techniques_missing"] = rules_res["techniques_missing"]
+        det["rule_effectiveness"] = rules_res["rule_effectiveness"]
+        det["rules_upload"] = rules_res.get("upload")
+    elif has_overlay:
+        # Fall back to XSOAR-derived heat-map + FP rule table
+        det["mitre_heatmap"] = overlay["mitre_heatmap"]
+        det["rules"] = overlay["rules"]
+        det["quality"]["mitre_coverage"] = overlay["mitre_coverage"]
+        det["gap_analysis"]["techniques_covered"] = overlay["techniques_covered"]
+
+    if has_logval:
+        det["priority_breakdown"] = logval["priority_breakdown"]
+        det["logval_total"] = logval["total"]
+
+    det["xsoar_live"] = bool(has_overlay)
     return det
 
 
@@ -437,6 +462,21 @@ async def dashboard_ti_clear(tenant_id: str = "all", user=Depends(current_user_d
     await db.ti_rows.delete_many({"tenant_id": tenant_id})
     await db.ti_uploads.delete_many({"tenant_id": tenant_id})
     return {"cleared": True, "tenant_id": tenant_id}
+
+
+@api.delete("/dashboard/detection/rules-data")
+async def dashboard_rules_clear(tenant_id: str = "all", user=Depends(current_user_dep)):
+    """Clear the uploaded rule catalog for a tenant."""
+    await rules_ingest.delete_data(db, tenant_id)
+    return {"cleared": True, "tenant_id": tenant_id}
+
+
+@api.delete("/dashboard/detection/logval-data")
+async def dashboard_logval_clear(tenant_id: str = "all", user=Depends(current_user_dep)):
+    """Clear the uploaded log-validation priority data for a tenant."""
+    await logval_ingest.delete_data(db, tenant_id)
+    return {"cleared": True, "tenant_id": tenant_id}
+
 
 
 @api.get("/dashboard/soar-automation")
@@ -464,7 +504,7 @@ async def ai_insights(period: str = "monthly", tenant_id: str = "all", user=Depe
 # ---------- Uploads ----------
 @api.post("/upload/data")
 async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = File(...), user=Depends(current_user_dep)):
-    if source not in {"qradar", "xsoar", "threat_intel"}:
+    if source not in {"qradar", "xsoar", "threat_intel", "rules", "log_validation"}:
         raise HTTPException(status_code=400, detail="Invalid source")
     contents = await file.read()
     name = (file.filename or "").lower()
@@ -530,6 +570,26 @@ async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = Fi
             logger.exception("xsoar row persistence failed")
             record["xsoar_ingest_error"] = str(e)[:200]
 
+    # Rule catalog → Detection Engineering (MITRE coverage + rule effectiveness)
+    if source == "rules":
+        try:
+            rows = rules_ingest.parse_rows(contents, file.filename or "")
+            await rules_ingest.save_upload(db, tenant_id, file.filename or "upload", rows)
+            record["rules_row_count"] = len(rows)
+        except Exception as e:
+            logger.exception("rules row persistence failed")
+            record["rules_ingest_error"] = str(e)[:200]
+
+    # Log validation → Detection Engineering priority pie
+    if source == "log_validation":
+        try:
+            rows = logval_ingest.parse_rows(contents, file.filename or "")
+            await logval_ingest.save_upload(db, tenant_id, file.filename or "upload", rows)
+            record["logval_row_count"] = len(rows)
+        except Exception as e:
+            logger.exception("log_validation row persistence failed")
+            record["logval_ingest_error"] = str(e)[:200]
+
     # Surface what actually landed in a dashboard so the UI can give honest feedback.
     if source == "threat_intel":
         record["bound_rows"] = record.get("ti_row_count", 0)
@@ -537,6 +597,12 @@ async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = Fi
     elif source == "xsoar":
         record["bound_rows"] = record.get("xsoar_row_count", 0)
         record["dashboard"] = "SOC Manager / Detection / Executive"
+    elif source == "rules":
+        record["bound_rows"] = record.get("rules_row_count", 0)
+        record["dashboard"] = "Detection Engineering (MITRE + Rule Effectiveness)"
+    elif source == "log_validation":
+        record["bound_rows"] = record.get("logval_row_count", 0)
+        record["dashboard"] = "Detection Engineering (Log Priority)"
     else:  # qradar
         record["bound_rows"] = 0
         record["dashboard"] = None
@@ -544,7 +610,8 @@ async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = Fi
             "QRadar files are stored but do not populate dashboards yet. "
             "Upload an XSOAR or Threat Intel export to see live data."
         )
-    if source in {"xsoar", "threat_intel"} and record["bound_rows"] == 0 and not record.get("ti_ingest_error") and not record.get("xsoar_ingest_error"):
+    if source in {"xsoar", "threat_intel", "rules", "log_validation"} and record["bound_rows"] == 0 \
+            and not any(record.get(k) for k in ("ti_ingest_error", "xsoar_ingest_error", "rules_ingest_error", "logval_ingest_error")):
         record["warning"] = (
             "0 rows matched the expected columns — nothing was added to the dashboard. "
             "Check that your file's column headers match the expected format."
