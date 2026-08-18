@@ -1,0 +1,25 @@
+{
+  "summary": "Verified PPTX export bug fix: the deck is now built with 100% native python-pptx objects (native charts, tables, shapes, text boxes) — no matplotlib, no rasterized screenshots. Wrote a dedicated pytest at /app/backend/tests/test_pptx_export.py that downloads three variants (weekly/all, monthly/acme-corp, quarterly/globalbank) from /api/export/pptx and inspects each .pptx as a ZIP archive. All 33 assertions pass in ~144s (parallel via pytest-xdist). Sample metrics for quarterly/globalbank: 15 slides · 7 native chart XML files · 7 embedded xlsx files · 0 media (image) files · 101 KB total.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_pptx_export.py",
+    "/app/test_reports/pytest/pptx_export_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "pptx_export.py is 1218 lines — beyond the 700-line guideline. Consider splitting into (a) theme/palette + primitives (_add_text, _fill, _no_line, _thin_border), (b) widgets (_kpi_card, _donut_gauge, _progress_bar, _priority_badge, _tag_pill), (c) native charts + table, and (d) per-slide builders. Would materially improve maintainability without changing any behavior.",
+    "_line_chart contains a dead loop over chart.legend.font.__dict__.get('_element', []) — always yields an empty iterable and does nothing. Safe to delete.",
+    "build_pptx passes hard-coded page numbers (3, 4, 6, 8, 10, 11, 13, 14) but declares total=12 in the footer pills. The pills therefore render '13/12' and '14/12' on the SOAR and Next Steps slides. Total should be dynamically computed (len(prs.slides)-1 after cover, or a counter) — this is a visible cosmetic bug in every generated deck.",
+    "_ai_recs_slide accepts `recs` but the caller only passes the first 4 anyway (rec[:4]) — recommendations 5+ are silently dropped. Fine for a summary card grid, but worth adding an ellipsis card or a 'see Next Steps table' pointer so users know more recs exist.",
+    "_donut_gauge uses etree/lxml to force holeSize — works, but reaches through chart._chartSpace (private). If python-pptx ever changes internals this breaks silently. Consider wrapping in try/except and logging."
+  ],
+  "updated_files": ["/app/backend/tests/test_pptx_export.py"],
+  "success_rate": {"backend": "100% (33/33 pptx export tests + prior 46/46 core suite)", "frontend": "N/A (backend-only per request)"},
+  "test_credentials": "Admin: admin@mssp-soc.io / Admin@2026!",
+  "seed_data_creation": "None. Tests only READ from /api/export/pptx.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "test_pptx_export.py covers: (1) source-file assertions (no matplotlib/pyplot/savefig/add_picture/PIL/_fig_to_png/render_* helpers, uses add_chart+add_table+CategoryChartData), (2) archive assertions per (period,tenant) variant — zero files under ppt/media/, zero <p:pic> elements across all slide XML, >=5 native chart XML files, >=3 distinct native chart types (doughnut mandatory + at least one of line/bar/pie), >=2 native <a:tbl> tables, >=1 embedded xlsx per chart, >=12 slides, at least 2 text-carrying shapes per slide, deck size 20–300 KB. Runtime ~2m 24s because the LLM enrichment call adds a few seconds per export; set HF_MODEL_ID='' if you want it faster.",
+  "rca_of_the_issue": "N/A — this was a verification task, not a bug-fix. The prior implementation (screenshots pasted into slides) has been fully replaced. Evidence: (1) grep of pptx_export.py returns zero hits for matplotlib/add_picture/savefig; (2) every downloaded .pptx contains ppt/charts/chart*.xml with matched ppt/embeddings/*.xlsx and an empty (absent) ppt/media/ folder; (3) no <p:pic> elements found in any slide XML across all three period/tenant variants; (4) deck sizes are 100-140 KB (image-heavy decks would be >1 MB)."
+}

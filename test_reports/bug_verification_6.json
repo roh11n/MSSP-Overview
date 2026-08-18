@@ -1,0 +1,40 @@
+{
+  "verdict": "fixed",
+  "user_reported_bug": "there are total 60 around advisory why it's showing wrong count only 3 same for other areas as well",
+  "summary": "No relevant testing skill found. Focused verification confirmed the Welspun threat-intel upload now drives full-batch KPI counts: backend API returns 60 total advisories for weekly, monthly, and quarterly, with non-trivial IOC/industry totals; frontend Threat Intelligence page displays 60 on all three period tabs after login.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/tests/ti_bug_backend_check.py",
+    "/app/tests/ti_bug_ui_playwright_body.py",
+    "/app/test_reports/ti_backend_evidence.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Reviewed /app/backend/ti_ingest.py: compute_dashboard() uses all stored rows for KPI totals and does not apply the previous rolling cutoff. Period is only reflected in the returned period/timeline behavior.",
+    "Reviewed /app/frontend/src/pages/ThreatIntelDashboard.jsx: Total Advisories KPI renders data.summary.total_advisories from the dashboard API response."
+  ],
+  "updated_files": [
+    "/app/tests/ti_bug_backend_check.py",
+    "/app/tests/ti_bug_ui_playwright_body.py",
+    "/app/test_reports/ti_backend_evidence.json",
+    "/app/test_reports/bug_verification_6.json",
+    "/app/test_reports/iteration_6.json"
+  ],
+  "success_rate": {
+    "backend": "100%",
+    "frontend": "100%"
+  },
+  "seed_data_creation": "Re-uploaded /tmp/welspun.xlsx as Welspun_July_2026.xlsx via POST /api/upload/data?source=threat_intel&tenant_id=all. This replaced tenant 'all' threat-intel rows with the latest batch: 950 workbook rows, 885 normalized rows, 60 unique advisories.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Skill search for 'advisory count threat intel upload dashboard' returned no relevant testing skill. Backend evidence: weekly/monthly/quarterly GET /api/dashboard/threat-intel?tenant_id=all each returned data_status=live, upload.filename=Welspun_July_2026.xlsx, summary.total_advisories=60, total_iocs=1026, unique_domains=338, unique_hashes=571, unique_ips=117, industries_covered=7. UI evidence: after admin login, /threat-intel data source chip showed Welspun_July_2026.xlsx and Total Advisories card text was 60 on Monthly, Weekly, and Quarterly tabs; screenshots were captured for each tab.",
+  "rca_of_the_issue": "Previous under-count was caused by filtering uploaded advisory rows through a rolling period cutoff before computing KPI totals. The verified code now computes KPI totals over the complete uploaded batch, so the user-visible advisory count no longer drops to 3 when switching weekly/monthly tabs."
+}

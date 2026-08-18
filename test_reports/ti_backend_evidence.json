@@ -1,0 +1,138 @@
+{
+  "ok": true,
+  "evidence": {
+    "base_url": "http://127.0.0.1:8001/api",
+    "file": "/tmp/welspun.xlsx",
+    "workbook_rows": 950,
+    "workbook_unique_advisories": 60,
+    "upload_response": {
+      "source": "threat_intel",
+      "tenant_id": "all",
+      "filename": "Welspun_July_2026.xlsx",
+      "rows": 950,
+      "columns": [
+        "Advisories Name ",
+        "Industry",
+        "Date of Release",
+        "IPs ",
+        "Domain",
+        "Hash",
+        "Hash Type "
+      ],
+      "uploaded_by": "admin@mssp-soc.io",
+      "uploaded_at": "2026-08-12T13:06:40.400901+00:00",
+      "sample": [
+        {
+          "Advisories Name ": "AI-themed Browser Extension Campaign Enables Search Traffic Interception and Steals User Data",
+          "Industry": "All",
+          "Date of Release": "2026-01-07 00:00:00",
+          "IPs ": "",
+          "Domain": "perplexity-ai[.]online",
+          "Hash": "",
+          "Hash Type ": ""
+        },
+        {
+          "Advisories Name ": "",
+          "Industry": "",
+          "Date of Release": "",
+          "IPs ": "",
+          "Domain": "",
+          "Hash": "",
+          "Hash Type ": ""
+        },
+        {
+          "Advisories Name ": "Operation DragonReturn: East Asian Threat Actors Conduct Spearphishing Campaign Targeting India's Taxpayer Ecosystem",
+          "Industry": "All",
+          "Date of Release": "2026-01-07 00:00:00",
+          "IPs ": "",
+          "Domain": "kkxqbh.top",
+          "Hash": "5a00485968679dc0ed6d80b659f48287603864c223e952918d2c2aaddfa2d280",
+          "Hash Type ": "SHA-256"
+        },
+        {
+          "Advisories Name ": "Operation DragonReturn: East Asian Threat Actors Conduct Spearphishing Campaign Targeting India's Taxpayer Ecosystem",
+          "Industry": "All",
+          "Date of Release": "2026-01-07 00:00:00",
+          "IPs ": "",
+          "Domain": "govtop.one",
+          "Hash": "6751ad8d0aeb6ac67cd54ea42657ce1f16addc3e3111f9e60b11931ebf58e77d",
+          "Hash Type ": "SHA-256"
+        },
+        {
+          "Advisories Name ": "Operation DragonReturn: East Asian Threat Actors Conduct Spearphishing Campaign Targeting India's Taxpayer Ecosystem",
+          "Industry": "All",
+          "Date of Release": "2026-01-07 00:00:00",
+          "IPs ": "",
+          "Domain": "ikkkkddd.com",
+          "Hash": "7e142c8fa614cc39d0453aa648b12209821c6bcbb77ee02094f70161b40d50ae",
+          "Hash Type ": "SHA-256"
+        }
+      ],
+      "ti_upload_id": "4b3d46e6-d3c5-4515-863d-ffc49224e386",
+      "ti_row_count": 885
+    },
+    "period_results": {
+      "weekly": {
+        "data_status": "live",
+        "upload": {
+          "upload_id": "4b3d46e6-d3c5-4515-863d-ffc49224e386",
+          "tenant_id": "all",
+          "filename": "Welspun_July_2026.xlsx",
+          "row_count": 885,
+          "uploaded_by": "admin@mssp-soc.io",
+          "uploaded_at": "2026-08-12T13:06:40.531449+00:00"
+        },
+        "summary": {
+          "total_advisories": 60,
+          "total_iocs": 1026,
+          "unique_ips": 117,
+          "unique_domains": 338,
+          "unique_hashes": 571,
+          "industries_covered": 7
+        },
+        "timeline_points": 18
+      },
+      "monthly": {
+        "data_status": "live",
+        "upload": {
+          "upload_id": "4b3d46e6-d3c5-4515-863d-ffc49224e386",
+          "tenant_id": "all",
+          "filename": "Welspun_July_2026.xlsx",
+          "row_count": 885,
+          "uploaded_by": "admin@mssp-soc.io",
+          "uploaded_at": "2026-08-12T13:06:40.531449+00:00"
+        },
+        "summary": {
+          "total_advisories": 60,
+          "total_iocs": 1026,
+          "unique_ips": 117,
+          "unique_domains": 338,
+          "unique_hashes": 571,
+          "industries_covered": 7
+        },
+        "timeline_points": 18
+      },
+      "quarterly": {
+        "data_status": "live",
+        "upload": {
+          "upload_id": "4b3d46e6-d3c5-4515-863d-ffc49224e386",
+          "tenant_id": "all",
+          "filename": "Welspun_July_2026.xlsx",
+          "row_count": 885,
+          "uploaded_by": "admin@mssp-soc.io",
+          "uploaded_at": "2026-08-12T13:06:40.531449+00:00"
+        },
+        "summary": {
+          "total_advisories": 60,
+          "total_iocs": 1026,
+          "unique_ips": 117,
+          "unique_domains": 338,
+          "unique_hashes": 571,
+          "industries_covered": 7
+        },
+        "timeline_points": 18
+      }
+    },
+    "failures": []
+  }
+}

@@ -1,89 +1,647 @@
-from fastapi import FastAPI, APIRouter
+"""MSSP SOC KPI Dashboard - Backend API."""
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+import base64
+import io
+import logging
+import os
+from datetime import datetime, timezone
+from typing import List, Optional
 
-# Create the main app without a prefix
-app = FastAPI()
+import pandas as pd
+from bson import ObjectId
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, EmailStr, Field
+from starlette.middleware.cors import CORSMiddleware
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
+from auth import (
+    VALID_ROLES,
+    clear_auth_cookies,
+    create_access_token,
+    create_refresh_token,
+    get_current_user,
+    hash_password,
+    seed_admin,
+    set_auth_cookies,
+    verify_password,
+)
+import emailer
+import llm as llm_mod
+import copilot as iris
+import mock_data
+import pptx_export
+import recommendations
+import tenants as tenants_mod
+import ti_ingest
+import xsoar_ingest
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("mssp-soc")
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+mongo_url = os.environ["MONGO_URL"]
+mongo_client = AsyncIOMotorClient(mongo_url)
+db = mongo_client[os.environ["DB_NAME"]]
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
+app = FastAPI(title="MSSP SOC KPI Dashboard")
 
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
-
+# CORS BEFORE include_router
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+api = APIRouter(prefix="/api")
+
+
+class RegisterBody(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str
+    role: str = "client"
+
+
+class LoginBody(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TenantBody(BaseModel):
+    domain: str
+    name: str
+    description: Optional[str] = ""
+    primary_color: Optional[str] = "#3B82F6"
+    logo_url: Optional[str] = None
+
+
+class BrandingBody(BaseModel):
+    primary_color: Optional[str] = None
+    logo_url: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class SendEmailBody(BaseModel):
+    to: List[EmailStr]
+    subject: str
+    html: str
+    tenant_id: Optional[str] = "all"
+    period: Optional[str] = "monthly"
+    attach_pptx: Optional[bool] = True
+
+
+class IrisChatBody(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+    session_id: Optional[str] = None
+    tenant_id: Optional[str] = "all"
+    period: Optional[str] = "monthly"
+
+
+async def seed_tenants():
+    """Seed the default tenants (idempotent)."""
+    for t in tenants_mod.DEFAULT_TENANTS:
+        existing = await db.tenants.find_one({"id": t["id"]})
+        if not existing:
+            doc = {**t, "created_at": datetime.now(timezone.utc).isoformat()}
+            await db.tenants.insert_one(doc)
+
+
+async def get_tenant(tenant_id: Optional[str]) -> dict:
+    tid = tenant_id or "all"
+    t = await db.tenants.find_one({"id": tid}, {"_id": 0})
+    if not t:
+        # fallback to default all
+        return {"id": "all", "name": "All Tenants", "domain": "ALL", "primary_color": "#3B82F6", "logo_url": None}
+    return t
+
+
+@app.on_event("startup")
+async def _startup():
+    await db.users.create_index("email", unique=True)
+    await db.login_attempts.create_index("identifier")
+    await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    await db.tenants.create_index("id", unique=True)
+    await db.iris_messages.create_index([("session_id", 1), ("created_at", 1)])
+    await db.iris_messages.create_index([("user_id", 1), ("created_at", -1)])
+    await db.ti_rows.create_index([("tenant_id", 1), ("date", -1)])
+    await db.ti_uploads.create_index([("tenant_id", 1), ("uploaded_at", -1)])
+    await db.xsoar_rows.create_index([("tenant_id", 1), ("occurred", -1)])
+    await db.xsoar_uploads.create_index([("tenant_id", 1), ("uploaded_at", -1)])
+    await seed_admin(db)
+    await seed_tenants()
+
+    creds_path = Path("/app/memory/test_credentials.md")
+    creds_path.parent.mkdir(parents=True, exist_ok=True)
+    creds_path.write_text(
+        "# MSSP SOC Dashboard - Test Credentials\n\n"
+        "## Admin\n"
+        f"- Email: `{os.environ.get('ADMIN_EMAIL')}`\n"
+        f"- Password: `{os.environ.get('ADMIN_PASSWORD')}`\n"
+        "- Role: `admin`\n\n"
+        "## Persona Demo Users\n"
+        "| Role | Email | Password |\n"
+        "|---|---|---|\n"
+        "| soc_manager | soc.manager@mssp-soc.io | SocManager@2026! |\n"
+        "| client | client@mssp-soc.io | Client@2026! |\n"
+        "| detection_engineer | detection@mssp-soc.io | Detection@2026! |\n"
+        "| ti_analyst | ti.analyst@mssp-soc.io | TiAnalyst@2026! |\n"
+        "| automation_engineer | automation@mssp-soc.io | Automation@2026! |\n"
+    )
+    logger.info("Startup complete: admin + persona users + tenants seeded.")
+
+    # Kick off HF model preload in background so /api/ai/* is fast on first call
+    llm_mod.preload_async()
+
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+async def _shutdown():
+    mongo_client.close()
+
+
+# ---------- Auth ----------
+async def current_user_dep(request: Request):
+    return await get_current_user(request, db)
+
+
+@api.post("/auth/register")
+async def register(body: RegisterBody, response: Response):
+    email = body.email.lower()
+    if body.role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    doc = {
+        "email": email,
+        "password_hash": hash_password(body.password),
+        "name": body.name,
+        "role": body.role,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.users.insert_one(doc)
+    uid = str(result.inserted_id)
+    access = create_access_token(uid, email, body.role)
+    refresh = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    return {"id": uid, "email": email, "name": body.name, "role": body.role, "access_token": access}
+
+
+@api.post("/auth/login")
+async def login(body: LoginBody, response: Response):
+    email = body.email.lower()
+    user = await db.users.find_one({"email": email})
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    uid = str(user["_id"])
+    access = create_access_token(uid, email, user["role"])
+    refresh = create_refresh_token(uid)
+    set_auth_cookies(response, access, refresh)
+    return {"id": uid, "email": email, "name": user["name"], "role": user["role"], "access_token": access}
+
+
+@api.post("/auth/logout")
+async def logout(response: Response, user=Depends(current_user_dep)):
+    clear_auth_cookies(response)
+    return {"ok": True}
+
+
+@api.get("/auth/me")
+async def me(user=Depends(current_user_dep)):
+    return user
+
+
+# ---------- Tenants ----------
+@api.get("/tenants")
+async def list_tenants(user=Depends(current_user_dep)):
+    docs = await db.tenants.find({}, {"_id": 0}).to_list(200)
+    return docs
+
+
+@api.post("/tenants")
+async def create_tenant(body: TenantBody, user=Depends(current_user_dep)):
+    tid = body.name.lower().replace(" ", "-").replace("_", "-")[:40]
+    if await db.tenants.find_one({"id": tid}):
+        raise HTTPException(status_code=400, detail="Tenant already exists")
+    doc = {
+        "id": tid,
+        "domain": body.domain.upper(),
+        "name": body.name,
+        "description": body.description or "",
+        "primary_color": body.primary_color or "#3B82F6",
+        "logo_url": body.logo_url,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "risk_modifier": 1.0,
+        "volume_modifier": 1.0,
+    }
+    await db.tenants.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.patch("/tenants/{tenant_id}")
+async def update_tenant(tenant_id: str, body: BrandingBody, user=Depends(current_user_dep)):
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    await db.tenants.update_one({"id": tenant_id}, {"$set": updates})
+    return await get_tenant(tenant_id)
+
+
+@api.post("/tenants/{tenant_id}/logo")
+async def upload_logo(tenant_id: str, file: UploadFile = File(...), user=Depends(current_user_dep)):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Must be an image file")
+    contents = await file.read()
+    if len(contents) > 512 * 1024:
+        raise HTTPException(status_code=400, detail="Image must be < 512 KB")
+    data_url = f"data:{file.content_type};base64,{base64.b64encode(contents).decode()}"
+    await db.tenants.update_one({"id": tenant_id}, {"$set": {"logo_url": data_url}})
+    return {"logo_url": data_url[:80] + "…"}
+
+
+@api.post("/tenants/upload-csv")
+async def upload_tenants_csv(file: UploadFile = File(...), user=Depends(current_user_dep)):
+    """Bulk-load tenants from a CSV export of QRadar domains.
+
+    Expected columns: domain, name, description (optional), primary_color (optional).
+    """
+    contents = await file.read()
+    name = (file.filename or "").lower()
+    try:
+        df = pd.read_csv(io.BytesIO(contents)) if name.endswith(".csv") else pd.read_excel(io.BytesIO(contents))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Parse error: {str(e)[:120]}")
+    df.columns = [c.lower().strip() for c in df.columns]
+    if "domain" not in df.columns or "name" not in df.columns:
+        raise HTTPException(status_code=400, detail="CSV must have 'domain' and 'name' columns")
+    added = 0
+    for _, row in df.iterrows():
+        tid = str(row["name"]).lower().replace(" ", "-")[:40]
+        if not tid or await db.tenants.find_one({"id": tid}):
+            continue
+        await db.tenants.insert_one({
+            "id": tid,
+            "domain": str(row["domain"]).upper(),
+            "name": str(row["name"]),
+            "description": str(row.get("description", "")) if "description" in df.columns else "",
+            "primary_color": str(row.get("primary_color", "#3B82F6")) if "primary_color" in df.columns else "#3B82F6",
+            "logo_url": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "risk_modifier": 1.0,
+            "volume_modifier": 1.0,
+        })
+        added += 1
+    return {"added": added, "total_rows": len(df)}
+
+
+# ---------- Dashboards ----------
+def _period(period: Optional[str]) -> str:
+    p = (period or "monthly").lower()
+    if p not in mock_data.PERIODS:
+        raise HTTPException(status_code=400, detail="Invalid period")
+    return p
+
+
+@api.get("/dashboard/executive")
+async def executive(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    p = _period(period)
+    tenant = await get_tenant(tenant_id)
+    exec_d = tenants_mod.executive_overview(p, tenant)
+    soc = tenants_mod.soc_manager(p, tenant)
+    det = tenants_mod.detection_engineering(p, tenant)
+    ti = tenants_mod.threat_intelligence(p, tenant)
+    soar = tenants_mod.soar_automation(p, tenant)
+
+    # Overlay live XSOAR data when the tenant has an upload
+    xsoar_roll = await xsoar_ingest.compute_executive_rollup(db, tenant_id)
+    if xsoar_roll.get("data_status") == "live":
+        for key in ("incidents", "mttr_hours", "sla_compliance", "automation_rate",
+                    "top_rule", "top_mitre_tactic", "incident_trend", "sla_trend"):
+            if xsoar_roll.get(key) is not None:
+                exec_d[key] = xsoar_roll[key]
+        exec_d["xsoar_live"] = True
+        exec_d["xsoar_upload"] = xsoar_roll.get("upload")
+
+    recs = recommendations.generate(exec_d, soc, det, ti, soar)
+    return {**exec_d, "recommendations": recs}
+
+
+@api.get("/dashboard/soc-manager")
+async def dashboard_soc(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    return await xsoar_ingest.compute_soc_manager(db, tenant_id=tenant_id)
+
+
+@api.delete("/dashboard/soc-manager/data")
+async def dashboard_soc_clear(tenant_id: str = "all", user=Depends(current_user_dep)):
+    await db.xsoar_rows.delete_many({"tenant_id": tenant_id})
+    await db.xsoar_uploads.delete_many({"tenant_id": tenant_id})
+    return {"cleared": True, "tenant_id": tenant_id}
+
+
+@api.get("/dashboard/client")
+async def dashboard_client(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    return tenants_mod.client_executive(_period(period), await get_tenant(tenant_id))
+
+
+@api.get("/dashboard/detection-engineering")
+async def dashboard_det(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    return tenants_mod.detection_engineering(_period(period), await get_tenant(tenant_id))
+
+
+@api.get("/dashboard/threat-intel")
+async def dashboard_ti(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    return await ti_ingest.compute_dashboard(db, tenant_id=tenant_id, period=_period(period))
+
+
+@api.get("/dashboard/threat-intel/upload-info")
+async def dashboard_ti_upload_info(tenant_id: str = "all", user=Depends(current_user_dep)):
+    return {"upload": await ti_ingest.latest_upload(db, tenant_id)}
+
+
+@api.delete("/dashboard/threat-intel/data")
+async def dashboard_ti_clear(tenant_id: str = "all", user=Depends(current_user_dep)):
+    """Clear all uploaded threat-intel rows for a tenant (resets the dashboard)."""
+    await db.ti_rows.delete_many({"tenant_id": tenant_id})
+    await db.ti_uploads.delete_many({"tenant_id": tenant_id})
+    return {"cleared": True, "tenant_id": tenant_id}
+
+
+@api.get("/dashboard/soar-automation")
+async def dashboard_soar(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    return await xsoar_ingest.compute_soar(db, tenant_id=tenant_id)
+
+
+# ---------- AI / LLM ----------
+@api.get("/ai/status")
+async def ai_status(user=Depends(current_user_dep)):
+    return llm_mod.status()
+
+
+@api.get("/ai/insights")
+async def ai_insights(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    p = _period(period)
+    tenant = await get_tenant(tenant_id)
+    exec_d = tenants_mod.executive_overview(p, tenant)
+    soc = tenants_mod.soc_manager(p, tenant)
+    det = tenants_mod.detection_engineering(p, tenant)
+    ti = tenants_mod.threat_intelligence(p, tenant)
+    soar = tenants_mod.soar_automation(p, tenant)
+    recs = recommendations.generate(exec_d, soc, det, ti, soar)
+    enriched = llm_mod.enrich_recommendations(recs, exec_d, max_llm=3)
+    return {"recommendations": enriched, "llm": llm_mod.status()}
+
+
+# ---------- Uploads ----------
+@api.post("/upload/data")
+async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = File(...), user=Depends(current_user_dep)):
+    if source not in {"qradar", "xsoar", "threat_intel"}:
+        raise HTTPException(status_code=400, detail="Invalid source")
+    contents = await file.read()
+    name = (file.filename or "").lower()
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(contents))
+        elif name.endswith(".xlsx") or name.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(contents))
+        else:
+            raise HTTPException(status_code=400, detail="File must be CSV or Excel")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Parse error: {str(e)[:120]}")
+
+    record = {
+        "source": source,
+        "tenant_id": tenant_id,
+        "filename": file.filename,
+        "rows": len(df),
+        "columns": list(df.columns.astype(str)),
+        "uploaded_by": user.get("email"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "sample": df.head(5).fillna("").astype(str).to_dict(orient="records"),
+    }
+    await db.uploads.insert_one(record)
+    record.pop("_id", None)
+
+    # For threat_intel, also persist the normalised rows so they can drive
+    # the Threat Intelligence dashboard KPIs directly.
+    if source == "threat_intel":
+        try:
+            rows = ti_ingest.parse_rows(contents, file.filename or "")
+            upload_id = await ti_ingest.save_upload(
+                db, tenant_id=tenant_id,
+                uploaded_by=user.get("email") or "",
+                filename=file.filename or "upload",
+                rows=rows,
+            )
+            record["ti_upload_id"] = upload_id
+            record["ti_row_count"] = len(rows)
+        except Exception as e:
+            logger.exception("threat_intel row persistence failed")
+            record["ti_ingest_error"] = str(e)[:200]
+
+    # For xsoar, persist normalised incidents to drive SOC Manager /
+    # SOAR / Executive dashboards live.
+    if source == "xsoar":
+        try:
+            rows = xsoar_ingest.parse_rows(contents, file.filename or "")
+            upload_id = await xsoar_ingest.save_upload(
+                db, tenant_id=tenant_id,
+                uploaded_by=user.get("email") or "",
+                filename=file.filename or "upload",
+                rows=rows,
+            )
+            record["xsoar_upload_id"] = upload_id
+            record["xsoar_row_count"] = len(rows)
+        except Exception as e:
+            logger.exception("xsoar row persistence failed")
+            record["xsoar_ingest_error"] = str(e)[:200]
+
+    return record
+
+
+@api.get("/upload/history")
+async def upload_history(user=Depends(current_user_dep)):
+    cursor = db.uploads.find({}, {"_id": 0}).sort("uploaded_at", -1).limit(20)
+    docs = await cursor.to_list(20)
+    # Defensive: legacy pre-fix records may contain NaN floats in the sample
+    # payload which crash the strict JSON encoder. Sanitize on read.
+    import math
+    def _clean(v):
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return ""
+        if isinstance(v, dict):
+            return {k: _clean(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [_clean(x) for x in v]
+        return v
+    return [_clean(d) for d in docs]
+
+
+# ---------- Export ----------
+@api.get("/export/pptx")
+async def export_pptx(period: str = "monthly", tenant_id: str = "all", user=Depends(current_user_dep)):
+    p = _period(period)
+    tenant = await get_tenant(tenant_id)
+    all_data = tenants_mod.all_dashboards(p, tenant)
+    recs = recommendations.generate(all_data["executive"], all_data["soc_manager"], all_data["detection"], all_data["threat_intel"], all_data["soar"])
+    recs = llm_mod.enrich_recommendations(recs, all_data["executive"], max_llm=2)
+    buf = pptx_export.build_pptx(tenant, p, all_data, recs)
+    filename = f"MSSP_SOC_{tenant.get('id','all')}_{p}_{datetime.now(timezone.utc).strftime('%Y%m%d')}.pptx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---------- Email ----------
+@api.post("/email/send")
+async def send_email(body: SendEmailBody, user=Depends(current_user_dep)):
+    p = _period(body.period)
+    tenant = await get_tenant(body.tenant_id)
+    attachments = []
+    if body.attach_pptx:
+        all_data = tenants_mod.all_dashboards(p, tenant)
+        recs = recommendations.generate(all_data["executive"], all_data["soc_manager"], all_data["detection"], all_data["threat_intel"], all_data["soar"])
+        recs = llm_mod.enrich_recommendations(recs, all_data["executive"], max_llm=2)
+        buf = pptx_export.build_pptx(tenant, p, all_data, recs)
+        attachments.append({
+            "filename": f"MSSP_SOC_{tenant.get('id','all')}_{p}.pptx",
+            "data": buf.getvalue(),
+        })
+
+    return await emailer.send_email(
+        db,
+        to=[str(x) for x in body.to],
+        subject=body.subject,
+        html=body.html,
+        attachments=attachments,
+        meta={"tenant_id": body.tenant_id, "period": p, "sent_by": user.get("email")},
+    )
+
+
+@api.get("/email/history")
+async def email_history(user=Depends(current_user_dep)):
+    cursor = db.emails.find({}, {"attachments.content_b64": 0}).sort("sent_at", -1).limit(50)
+    docs = await cursor.to_list(50)
+    for d in docs:
+        d["_id"] = str(d["_id"])
+    return docs
+
+
+# ---------- IRIS Copilot (grounded chat) ----------
+@api.get("/copilot/status")
+async def copilot_status(user=Depends(current_user_dep)):
+    st = llm_mod.status()
+    return {
+        "name": "IRIS",
+        "full_name": "Intelligent Response & Insight System",
+        "model": st["model"],
+        "ready": st["loaded"],
+        "loading": st["loading"],
+        "suggestions": iris.SUGGESTED_QUESTIONS,
+    }
+
+
+@api.post("/copilot/chat")
+async def copilot_chat(body: IrisChatBody, user=Depends(current_user_dep)):
+    p = _period(body.period)
+    tenant = await get_tenant(body.tenant_id)
+    session_id = body.session_id or str(ObjectId())
+
+    # Load recent history for this session (last 10 messages)
+    hist_cursor = db.iris_messages.find(
+        {"session_id": session_id, "user_id": user["id"]},
+        {"_id": 0, "role": 1, "content": 1},
+    ).sort("created_at", -1).limit(10)
+    history = list(reversed(await hist_cursor.to_list(10)))
+
+    result = iris.answer(body.message, p, tenant, history)
+
+    now = datetime.now(timezone.utc).isoformat()
+    await db.iris_messages.insert_many([
+        {
+            "session_id": session_id,
+            "user_id": user["id"],
+            "role": "user",
+            "content": body.message,
+            "tenant_id": tenant.get("id"),
+            "period": p,
+            "created_at": now,
+        },
+        {
+            "session_id": session_id,
+            "user_id": user["id"],
+            "role": "assistant",
+            "content": result["answer"],
+            "source": result["source"],
+            "tenant_id": tenant.get("id"),
+            "period": p,
+            "created_at": now,
+        },
+    ])
+
+    return {
+        "session_id": session_id,
+        "answer": result["answer"],
+        "source": result["source"],
+        "model": result["model"],
+        "tenant_name": result["tenant_name"],
+        "created_at": now,
+    }
+
+
+@api.get("/copilot/history")
+async def copilot_history(session_id: str = Query(...), user=Depends(current_user_dep)):
+    cursor = db.iris_messages.find(
+        {"session_id": session_id, "user_id": user["id"]},
+        {"_id": 0, "user_id": 0},
+    ).sort("created_at", 1).limit(100)
+    return await cursor.to_list(100)
+
+
+@api.get("/copilot/sessions")
+async def copilot_sessions(user=Depends(current_user_dep)):
+    pipeline = [
+        {"$match": {"user_id": user["id"]}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {
+            "_id": "$session_id",
+            "last_message": {"$first": "$content"},
+            "last_role": {"$first": "$role"},
+            "last_at": {"$first": "$created_at"},
+            "tenant_id": {"$first": "$tenant_id"},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"last_at": -1}},
+        {"$limit": 20},
+    ]
+    docs = await db.iris_messages.aggregate(pipeline).to_list(20)
+    return [
+        {
+            "session_id": d["_id"],
+            "preview": (d.get("last_message") or "")[:80],
+            "last_at": d.get("last_at"),
+            "tenant_id": d.get("tenant_id"),
+            "messages": d.get("count", 0),
+        }
+        for d in docs
+    ]
+
+
+# ---------- Health ----------
+@api.get("/")
+async def root():
+    return {"service": "mssp-soc-dashboard", "status": "ok"}
+
+
+app.include_router(api)

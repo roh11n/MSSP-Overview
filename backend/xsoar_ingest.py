@@ -1,0 +1,498 @@
+"""XSOAR incident ingestion + KPI derivation.
+
+Persists uploaded XSOAR CSV/XLSX rows to `db.xsoar_rows` (one document per
+incident, keyed by tenant + upload_id) and computes SOC Manager / SOAR /
+Executive dashboard KPIs directly from that data.
+
+Design mirrors ti_ingest.py:
+- Uploading replaces prior rows for the tenant (batch semantics)
+- When no data has been uploaded, dashboards report `data_status: "empty"`
+- Column names may vary between XSOAR exports; we normalise a curated set
+"""
+from __future__ import annotations
+
+import io
+import re
+import uuid
+from collections import Counter
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+
+
+# --- column normalisation ------------------------------------------------
+
+_CANONICAL_COLS = {
+    "id": "id", "event id": "event_id", "name": "name",
+    "type": "type", "severity": "severity",
+    "analystseverity": "analyst_severity", "analyst severity": "analyst_severity",
+    "finalseverity": "final_severity", "initialseverity": "initial_severity",
+    "status": "status", "owner": "owner",
+    "playbookid": "playbook_id", "playbook id": "playbook_id",
+    "occurred": "occurred", "closed": "closed", "closereason": "close_reason",
+    "close reason": "close_reason", "closenotes": "close_notes",
+    "actual time taken": "time_taken_sec",
+    "ticket number": "ticket_number", "ticket opened date": "ticket_opened",
+    "ticket acknowledged date": "ticket_acknowledged",
+    "ticket resolution date": "ticket_resolved",
+    "ticket closed date": "ticket_closed",
+    "tenant name": "tenant_name", "log source": "log_source",
+    "rule name": "rule_name",
+    "mitre tactic name": "mitre_tactic",
+    "mitre technique name": "mitre_technique",
+    "sla breached": "sla_breached",
+    "time to acknowledge": "time_to_ack",
+    "time to assignment": "time_to_assign",
+    "category": "category", "alert category": "alert_category",
+    "auto close": "auto_close",
+    "completed task count": "tasks_completed",
+    "remaining task count": "tasks_remaining",
+    "playbooks failed commands": "failed_commands",
+    "playbook names with failed tasks": "failed_playbooks",
+    "openduration": "open_duration_sec", "open duration": "open_duration_sec",
+    "threat actor": "threat_actor",
+    "malware family": "malware_family",
+    "malware name": "malware_name",
+    "threat family name": "threat_family",
+    "cve": "cve", "cve id": "cve_id", "cve list": "cve_list",
+    "source ip": "source_ip", "destination ip": "destination_ip",
+    "assignment group": "assignment_group",
+    "part of campaign": "part_of_campaign",
+    "campaign name": "campaign_name",
+}
+
+
+def _norm_col(c: str) -> str:
+    key = re.sub(r"\s+", " ", str(c).strip().lower())
+    return _CANONICAL_COLS.get(key, "extra_" + re.sub(r"[^a-z0-9_]+", "_", key))
+
+
+def _clean(v):
+    if v is None: return None
+    if isinstance(v, float) and pd.isna(v): return None
+    s = str(v).strip()
+    return s or None
+
+
+def _parse_dt(v) -> Optional[str]:
+    """Parse dates in RFC 2822 or ISO format → ISO string."""
+    if not v or (isinstance(v, float) and pd.isna(v)): return None
+    try:
+        ts = pd.to_datetime(v, errors="coerce", utc=True)
+        if pd.isna(ts): return None
+        return ts.isoformat()
+    except Exception:
+        return None
+
+
+def _to_seconds(v) -> Optional[float]:
+    if v is None or (isinstance(v, float) and pd.isna(v)): return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def _bool_ish(v) -> Optional[bool]:
+    if v is None or (isinstance(v, float) and pd.isna(v)): return None
+    if isinstance(v, bool): return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    s = str(v).strip().lower()
+    if s in {"true", "1", "1.0", "yes", "y", "t"}: return True
+    if s in {"false", "0", "0.0", "no", "n", "f"}: return False
+    return None
+
+
+def parse_rows(contents: bytes, filename: str) -> List[Dict[str, Any]]:
+    name = (filename or "").lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(io.BytesIO(contents), low_memory=False)
+    else:
+        df = pd.read_excel(io.BytesIO(contents))
+
+    df.columns = [_norm_col(c) for c in df.columns]
+
+    rows: List[Dict[str, Any]] = []
+    for _, r in df.iterrows():
+        occurred_iso = _parse_dt(r.get("occurred") or r.get("ticket_opened"))
+        closed_iso = _parse_dt(r.get("closed") or r.get("ticket_closed"))
+        ack_iso = _parse_dt(r.get("ticket_acknowledged"))
+        resolved_iso = _parse_dt(r.get("ticket_resolved"))
+
+        # Derive MTTR seconds when we have both dates
+        mttr_sec = None
+        if occurred_iso and closed_iso:
+            try:
+                mttr_sec = (pd.to_datetime(closed_iso) - pd.to_datetime(occurred_iso)).total_seconds()
+                if mttr_sec < 0: mttr_sec = None
+            except Exception: pass
+        # MTTA seconds
+        mtta_sec = None
+        if occurred_iso and ack_iso:
+            try:
+                mtta_sec = (pd.to_datetime(ack_iso) - pd.to_datetime(occurred_iso)).total_seconds()
+                if mtta_sec < 0: mtta_sec = None
+            except Exception: pass
+
+        rec = {
+            "incident_id": _clean(r.get("id")),
+            "name": _clean(r.get("name")),
+            "type": _clean(r.get("type")),
+            "severity": _clean(r.get("severity")),
+            "analyst_severity": _clean(r.get("analyst_severity")),
+            "status": _clean(r.get("status")),
+            "owner": _clean(r.get("owner")),
+            "playbook_id": _clean(r.get("playbook_id")),
+            "occurred": occurred_iso,
+            "closed": closed_iso,
+            "close_reason": _clean(r.get("close_reason")),
+            "time_taken_sec": _to_seconds(r.get("time_taken_sec")),
+            "open_duration_sec": _to_seconds(r.get("open_duration_sec")),
+            "mttr_sec": mttr_sec,
+            "mtta_sec": mtta_sec,
+            "tenant_name": _clean(r.get("tenant_name")),
+            "log_source": _clean(r.get("log_source")),
+            "rule_name": _clean(r.get("rule_name")) or _clean(r.get("name")),
+            "mitre_tactic": _clean(r.get("mitre_tactic")),
+            "mitre_technique": _clean(r.get("mitre_technique")),
+            "sla_breached": _bool_ish(r.get("sla_breached")),
+            "auto_close": _bool_ish(r.get("auto_close")),
+            "category": _clean(r.get("category")) or _clean(r.get("alert_category")),
+            "source_ip": _clean(r.get("source_ip")),
+            "destination_ip": _clean(r.get("destination_ip")),
+            "assignment_group": _clean(r.get("assignment_group")),
+            "threat_actor": _clean(r.get("threat_actor")),
+            "malware_family": _clean(r.get("malware_family")) or _clean(r.get("malware_name")) or _clean(r.get("threat_family")),
+        }
+        # Skip rows with no incident id AND no name — likely header/blank
+        if not rec["incident_id"] and not rec["name"]: continue
+        rows.append(rec)
+    return rows
+
+
+# --- persistence ---------------------------------------------------------
+
+async def save_upload(db, tenant_id: str, uploaded_by: str, filename: str,
+                       rows: List[Dict[str, Any]]) -> str:
+    upload_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    await db.xsoar_rows.delete_many({"tenant_id": tenant_id})
+    if rows:
+        docs = [{**r, "tenant_id": tenant_id, "upload_id": upload_id, "uploaded_at": now} for r in rows]
+        # Split into chunks to keep single insert under mongo 16MB doc-batch limit
+        for i in range(0, len(docs), 1000):
+            await db.xsoar_rows.insert_many(docs[i:i+1000])
+    await db.xsoar_uploads.insert_one({
+        "upload_id": upload_id, "tenant_id": tenant_id, "filename": filename,
+        "row_count": len(rows), "uploaded_by": uploaded_by, "uploaded_at": now,
+    })
+    return upload_id
+
+
+async def latest_upload(db, tenant_id: str) -> Optional[dict]:
+    return await db.xsoar_uploads.find_one(
+        {"tenant_id": tenant_id}, sort=[("uploaded_at", -1)], projection={"_id": 0},
+    )
+
+
+async def _rows(db, tenant_id: str) -> List[dict]:
+    return await db.xsoar_rows.find(
+        {"tenant_id": tenant_id}, projection={"_id": 0, "tenant_id": 0}
+    ).to_list(200000)
+
+
+# --- KPI helpers ---------------------------------------------------------
+
+def _severity_norm(s: Optional[str]) -> str:
+    if not s: return "Unknown"
+    s2 = s.strip().lower()
+    if s2 in {"critical", "sev-1", "1"}: return "Critical"
+    if s2 in {"high", "sev-2", "2"}: return "High"
+    if s2 in {"medium", "med", "sev-3", "3"}: return "Medium"
+    if s2 in {"low", "sev-4", "4"}: return "Low"
+    if s2 in {"informational", "info", "sev-5", "5"}: return "Informational"
+    return s.title()
+
+
+def _avg(values: List[float]) -> float:
+    vals = [v for v in values if v is not None]
+    if not vals: return 0.0
+    return round(sum(vals) / len(vals), 1)
+
+
+def _pct(num: int, den: int) -> float:
+    if den <= 0: return 0.0
+    return round(100.0 * num / den, 1)
+
+
+def _time_bins(dates: List[str], bucket: str = "day") -> List[Tuple[str, int]]:
+    """Return list of (label, count) sorted by label."""
+    c: Counter = Counter()
+    for d in dates:
+        if not d: continue
+        try:
+            ts = pd.to_datetime(d)
+            if bucket == "week":
+                y, w, _ = ts.isocalendar()
+                label = f"{y}-W{w:02d}"
+            elif bucket == "month":
+                label = ts.strftime("%Y-%m")
+            else:
+                label = ts.strftime("%Y-%m-%d")
+            c[label] += 1
+        except Exception:
+            continue
+    return sorted(c.items())
+
+
+# --- SOC Manager dashboard ----------------------------------------------
+
+async def compute_soc_manager(db, tenant_id: str) -> Dict[str, Any]:
+    rows = await _rows(db, tenant_id)
+    upload = await latest_upload(db, tenant_id)
+    if not rows:
+        return {"data_status": "empty", "upload": None}
+
+    total = len(rows)
+    closed = [r for r in rows if r.get("status") and r["status"].lower() == "closed"]
+    open_now = total - len(closed)
+    fp = sum(1 for r in rows if (r.get("close_reason") or "").lower() == "false positive")
+    tp = sum(1 for r in rows if r.get("close_reason") and "true" in r["close_reason"].lower())
+    sla_breached = sum(1 for r in rows if r.get("sla_breached") is True)
+
+    mttr_hours = round(_avg([r.get("mttr_sec") for r in rows]) / 3600.0, 2)
+    mtta_min = round(_avg([r.get("mtta_sec") for r in rows]) / 60.0, 1)
+    time_taken_min = round(_avg([r.get("time_taken_sec") for r in rows]) / 60.0, 1)
+    open_duration_h = round(_avg([r.get("open_duration_sec") for r in rows if (r.get("status") or "").lower() != "closed"]) / 3600.0, 1)
+
+    # Severity mix
+    sev_c: Counter = Counter(_severity_norm(r.get("severity")) for r in rows)
+    severity_distribution = [{"severity": k, "count": v} for k, v in sev_c.most_common() if k != "Unknown"] or [{"severity": k, "count": v} for k, v in sev_c.most_common()]
+
+    # Close reason mix
+    cr_c: Counter = Counter((r.get("close_reason") or "Unresolved") for r in closed)
+    close_reason_mix = [{"reason": k, "count": v} for k, v in cr_c.most_common()]
+
+    # Top rules
+    rule_c: Counter = Counter(r.get("rule_name") for r in rows if r.get("rule_name"))
+    top_rules = [{"rule": r[:80], "triggers": c} for r, c in rule_c.most_common(10)]
+
+    # Top rules by FP rate (rules with >=5 incidents)
+    rule_fp_stats: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        rn = r.get("rule_name")
+        if not rn: continue
+        s = rule_fp_stats.setdefault(rn, {"total": 0, "fp": 0})
+        s["total"] += 1
+        if (r.get("close_reason") or "").lower() == "false positive":
+            s["fp"] += 1
+    noisy_rules = sorted(
+        [{"rule": k[:80], "total": v["total"], "fp": v["fp"], "fp_pct": _pct(v["fp"], v["total"])}
+         for k, v in rule_fp_stats.items() if v["total"] >= 3],
+        key=lambda x: (-x["fp_pct"], -x["total"]),
+    )[:10]
+
+    # Categories
+    cat_c: Counter = Counter(r.get("category") for r in rows if r.get("category"))
+    categories = [{"category": k[:60], "count": v} for k, v in cat_c.most_common(8)]
+
+    # Analyst load
+    an_c: Counter = Counter(r.get("owner") for r in rows if r.get("owner"))
+    analyst_load = [{"analyst": k, "incidents": v} for k, v in an_c.most_common(10)]
+
+    # Incidents timeline (from occurred date)
+    tl = _time_bins([r.get("occurred") for r in rows], "day")
+    if len(tl) > 45:
+        tl = _time_bins([r.get("occurred") for r in rows], "week")
+    incidents_timeline = [{"date": d, "value": c} for d, c in tl]
+
+    # MTTR timeline (avg MTTR per day)
+    mttr_by_day: Dict[str, List[float]] = {}
+    for r in rows:
+        occ = r.get("occurred")
+        m = r.get("mttr_sec")
+        if not occ or m is None: continue
+        try:
+            key = pd.to_datetime(occ).strftime("%Y-%m-%d")
+            mttr_by_day.setdefault(key, []).append(m)
+        except Exception: pass
+    mttr_trend = [{"date": k, "value": round(sum(v) / len(v) / 3600.0, 2)}
+                  for k, v in sorted(mttr_by_day.items())]
+    if len(mttr_trend) > 45:
+        mttr_trend = mttr_trend[-45:]
+
+    return {
+        "data_status": "live",
+        "upload": upload,
+        "summary": {
+            "total_incidents": total,
+            "closed": len(closed),
+            "open": open_now,
+            "false_positive_rate": _pct(fp, len(closed)),
+            "true_positive_rate": _pct(tp, len(closed)),
+            "sla_breach_rate": _pct(sla_breached, total),
+            "sla_compliance_pct": round(100.0 - _pct(sla_breached, total), 1),
+            "mttr_hours": mttr_hours,
+            "mtta_minutes": mtta_min,
+            "avg_time_taken_min": time_taken_min,
+            "backlog_open": open_now,
+            "backlog_aging_hours": open_duration_h,
+        },
+        "severity_distribution": severity_distribution,
+        "close_reason_mix": close_reason_mix,
+        "top_rules": top_rules,
+        "noisy_rules": noisy_rules,
+        "categories": categories,
+        "analyst_load": analyst_load,
+        "incidents_timeline": incidents_timeline,
+        "mttr_trend": mttr_trend,
+    }
+
+
+# --- SOAR / Automation dashboard ----------------------------------------
+
+async def compute_soar(db, tenant_id: str, avg_manual_min: float = 30.0) -> Dict[str, Any]:
+    rows = await _rows(db, tenant_id)
+    upload = await latest_upload(db, tenant_id)
+    if not rows:
+        return {"data_status": "empty", "upload": None}
+
+    total = len(rows)
+    with_pb = [r for r in rows if r.get("playbook_id")]
+    auto_closed = [r for r in rows if r.get("auto_close") is True]
+    closed_rows = [r for r in rows if (r.get("status") or "").lower() == "closed"]
+
+    pb_c: Counter = Counter(r["playbook_id"] for r in with_pb)
+    # Per-playbook stats: total runs, closed, auto-closed, avg runtime
+    pb_stats: Dict[str, Dict[str, Any]] = {}
+    for r in with_pb:
+        pid = r["playbook_id"]
+        s = pb_stats.setdefault(pid, {"name": pid, "executions": 0, "closed": 0, "auto": 0, "runtimes": []})
+        s["executions"] += 1
+        if (r.get("status") or "").lower() == "closed": s["closed"] += 1
+        if r.get("auto_close") is True: s["auto"] += 1
+        if r.get("time_taken_sec") is not None:
+            s["runtimes"].append(r["time_taken_sec"])
+
+    playbooks = []
+    for pid, s in pb_stats.items():
+        avg_rt = round(sum(s["runtimes"]) / len(s["runtimes"]), 1) if s["runtimes"] else 0.0
+        playbooks.append({
+            "name": pid[:70],
+            "executions": s["executions"],
+            "closed": s["closed"],
+            "auto_closed": s["auto"],
+            "success_rate": _pct(s["closed"], s["executions"]),
+            "auto_close_rate": _pct(s["auto"], s["executions"]),
+            "avg_runtime_sec": avg_rt,
+        })
+    playbooks.sort(key=lambda x: x["executions"], reverse=True)
+
+    # Executions timeline
+    ex_tl = _time_bins([r.get("occurred") for r in with_pb], "day")
+    if len(ex_tl) > 45: ex_tl = _time_bins([r.get("occurred") for r in with_pb], "week")
+    executions_timeline = [{"date": d, "value": c} for d, c in ex_tl]
+
+    # Automation rate timeline (daily)
+    per_day_total: Counter = Counter()
+    per_day_auto: Counter = Counter()
+    for r in rows:
+        occ = r.get("occurred")
+        if not occ: continue
+        try: key = pd.to_datetime(occ).strftime("%Y-%m-%d")
+        except Exception: continue
+        per_day_total[key] += 1
+        if r.get("auto_close") is True: per_day_auto[key] += 1
+    auto_trend = [{"date": k, "value": _pct(per_day_auto.get(k, 0), per_day_total[k])}
+                  for k in sorted(per_day_total.keys())]
+    if len(auto_trend) > 45: auto_trend = auto_trend[-45:]
+
+    hours_saved = round(len(auto_closed) * avg_manual_min / 60.0, 1)
+    automation_rate = _pct(len(auto_closed), total)
+    success_rate = _pct(len(closed_rows), total)
+
+    return {
+        "data_status": "live",
+        "upload": upload,
+        "health": {
+            "automation_rate": automation_rate,
+            "success_rate": success_rate,
+            "playbooks_executed": len(with_pb),
+            "unique_playbooks": len(pb_stats),
+            "failed_automations": len(with_pb) - sum(s["closed"] for s in pb_stats.values()),
+            "avg_manual_min_baseline": avg_manual_min,
+        },
+        "efficiency": {
+            "auto_closures": len(auto_closed),
+            "manual_closures": len(closed_rows) - len(auto_closed),
+            "hours_saved": hours_saved,
+            "automation_roi_pct": round(hours_saved / max(1, total * avg_manual_min / 60.0) * 100.0, 1),
+        },
+        "playbooks": playbooks[:15],
+        "automation_trend": auto_trend,
+        "executions_timeline": executions_timeline,
+    }
+
+
+# --- Executive Overview roll-up -----------------------------------------
+
+async def compute_executive_rollup(db, tenant_id: str) -> Dict[str, Any]:
+    """Roll up MTTR / SLA / Automation / Incidents / top-rule from XSOAR.
+
+    Returns partial exec KPIs that the caller can merge with mock/other
+    persona data (Threat Intel, MITRE coverage, etc.).
+    """
+    rows = await _rows(db, tenant_id)
+    upload = await latest_upload(db, tenant_id)
+    if not rows:
+        return {"data_status": "empty"}
+
+    total = len(rows)
+    closed = [r for r in rows if (r.get("status") or "").lower() == "closed"]
+    fp = sum(1 for r in rows if (r.get("close_reason") or "").lower() == "false positive")
+    sla_breached = sum(1 for r in rows if r.get("sla_breached") is True)
+    auto_closed = sum(1 for r in rows if r.get("auto_close") is True)
+
+    mttr_h = round(_avg([r.get("mttr_sec") for r in rows]) / 3600.0, 2)
+    sla_compliance = round(100.0 - _pct(sla_breached, total), 1)
+    automation_rate = _pct(auto_closed, total)
+
+    rule_c: Counter = Counter(r.get("rule_name") for r in rows if r.get("rule_name"))
+    top_rule = rule_c.most_common(1)
+    top_rule_name = top_rule[0][0][:80] if top_rule else None
+
+    tactic_c: Counter = Counter(r.get("mitre_tactic") for r in rows if r.get("mitre_tactic"))
+    top_tactic = tactic_c.most_common(1)[0][0] if tactic_c else None
+
+    # Incident volume trend (last 30 buckets)
+    tl = _time_bins([r.get("occurred") for r in rows], "day")
+    if len(tl) > 30: tl = tl[-30:]
+    incident_trend = [{"date": d, "value": c} for d, c in tl]
+
+    sla_by_day: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        occ = r.get("occurred")
+        if not occ: continue
+        try: key = pd.to_datetime(occ).strftime("%Y-%m-%d")
+        except Exception: continue
+        s = sla_by_day.setdefault(key, {"total": 0, "ok": 0})
+        s["total"] += 1
+        if r.get("sla_breached") is not True: s["ok"] += 1
+    sla_trend = [{"date": k, "value": _pct(v["ok"], v["total"])}
+                 for k, v in sorted(sla_by_day.items())][-30:]
+
+    return {
+        "data_status": "live",
+        "upload": upload,
+        "incidents": total,
+        "mttr_hours": mttr_h,
+        "sla_compliance": sla_compliance,
+        "automation_rate": automation_rate,
+        "false_positive_rate": _pct(fp, len(closed)),
+        "top_rule": top_rule_name,
+        "top_mitre_tactic": top_tactic,
+        "incident_trend": incident_trend,
+        "sla_trend": sla_trend,
+    }
