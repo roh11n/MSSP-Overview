@@ -32,6 +32,18 @@ function makeDevServerV5Compatible(devServerConfig) {
     "Cross-Origin-Resource-Policy": "same-origin",
   };
 
+  // Don't let the benign "ResizeObserver loop" warning trigger the full-screen
+  // dev error overlay (it otherwise visually blocks dashboards/modals in preview).
+  compatibleConfig.client = {
+    ...(typeof compatibleConfig.client === "object" ? compatibleConfig.client : {}),
+    overlay: {
+      errors: true,
+      warnings: false,
+      runtimeErrors: (error) =>
+        !(error && typeof error.message === "string" && error.message.includes("ResizeObserver loop")),
+    },
+  };
+
   if (onBeforeSetupMiddleware || setupMiddlewares) {
     compatibleConfig.setupMiddlewares = (middlewares, devServer) => {
       if (onBeforeSetupMiddleware) {

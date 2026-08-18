@@ -40,10 +40,22 @@ export default function UploadModal({ open, onOpenChange }) {
       setResult(data);
       // Refresh every dashboard so the newly-ingested data shows immediately.
       qc.invalidateQueries();
-      const suffix = source === "threat_intel" && data.ti_row_count
-        ? ` · ${data.ti_row_count} advisory rows bound to Threat Intelligence`
-        : "";
-      toast.success(`Ingested ${data.rows} rows from ${data.filename}${suffix}`);
+      const tName = tenant?.name || "All Tenants";
+      if (source === "qradar") {
+        toast.warning(
+          `Stored ${data.rows} rows from ${data.filename}, but QRadar uploads don't drive dashboards yet — use XSOAR or Threat Intel.`
+        );
+      } else {
+        const bound = source === "threat_intel" ? (data.ti_row_count ?? 0) : (data.xsoar_row_count ?? 0);
+        const label = source === "threat_intel" ? "Threat Intelligence" : "SOC / Detection / Executive";
+        if (bound > 0) {
+          toast.success(`Ingested ${bound} rows into ${label} for ${tName}`);
+        } else {
+          toast.error(
+            `0 rows matched the expected columns — nothing was added. Check your file's headers.`
+          );
+        }
+      }
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Upload failed");
     } finally {
@@ -82,6 +94,16 @@ export default function UploadModal({ open, onOpenChange }) {
             {source === "threat_intel" && (
               <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] text-muted-foreground leading-relaxed" data-testid="upload-hint-threat-intel">
                 <span className="font-semibold text-foreground">Expected columns:</span> Advisories Name, Industry, Date of Release, IPs, Domain, Hash, Hash Type. Uploading replaces prior data for tenant <span className="font-semibold text-foreground">{tenant?.name || "All Tenants"}</span> and drives the Threat Intelligence dashboard live.
+              </div>
+            )}
+            {source === "xsoar" && (
+              <div className="mt-2 rounded-md border border-primary/30 bg-primary/5 p-2 text-[11px] text-muted-foreground leading-relaxed" data-testid="upload-hint-xsoar">
+                <span className="font-semibold text-foreground">Expected columns:</span> Name, Severity, Status, Close Reason, Occurred, Closed, Rule Name, MITRE Tactic Name, MITRE Technique Name, Auto Close, SLA Breached. Drives SOC Manager, Detection &amp; Executive for tenant <span className="font-semibold text-foreground">{tenant?.name || "All Tenants"}</span>.
+              </div>
+            )}
+            {source === "qradar" && (
+              <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-[11px] text-muted-foreground leading-relaxed" data-testid="upload-hint-qradar">
+                <span className="font-semibold text-amber-600">Heads up:</span> QRadar files are stored but don't populate dashboards yet. To see live data, upload an <span className="font-semibold text-foreground">XSOAR</span> or <span className="font-semibold text-foreground">Threat Intel</span> export.
               </div>
             )}
           </div>
@@ -132,13 +154,23 @@ export default function UploadModal({ open, onOpenChange }) {
           </div>
 
           {result && (
-            <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm">
-              <div className="flex items-center gap-2 font-medium text-emerald-500">
-                <Check className="h-4 w-4" /> Ingestion complete
+            <div className={cn(
+              "rounded-md border p-3 text-sm",
+              result.warning ? "border-amber-500/40 bg-amber-500/5" : "border-emerald-500/30 bg-emerald-500/5",
+            )} data-testid="upload-result">
+              <div className={cn("flex items-center gap-2 font-medium",
+                result.warning ? "text-amber-600" : "text-emerald-500")}>
+                <Check className="h-4 w-4" /> {result.warning ? "Uploaded with warnings" : "Ingestion complete"}
               </div>
               <div className="mt-2 text-xs text-muted-foreground space-y-1">
-                <div>Rows: <span className="text-foreground font-medium">{result.rows}</span></div>
-                <div>Columns: {result.columns?.slice(0, 6).join(", ")}{result.columns?.length > 6 ? "…" : ""}</div>
+                <div>Rows in file: <span className="text-foreground font-medium">{result.rows}</span></div>
+                {result.dashboard && (
+                  <div>Bound to dashboard: <span className="text-foreground font-medium" data-testid="upload-bound-rows">{result.bound_rows} rows → {result.dashboard}</span></div>
+                )}
+                <div>Detected columns: {result.columns?.slice(0, 6).join(", ")}{result.columns?.length > 6 ? "…" : ""}</div>
+                {result.warning && (
+                  <div className="text-amber-600 pt-1" data-testid="upload-warning">{result.warning}</div>
+                )}
               </div>
             </div>
           )}

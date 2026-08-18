@@ -527,6 +527,27 @@ async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = Fi
             logger.exception("xsoar row persistence failed")
             record["xsoar_ingest_error"] = str(e)[:200]
 
+    # Surface what actually landed in a dashboard so the UI can give honest feedback.
+    if source == "threat_intel":
+        record["bound_rows"] = record.get("ti_row_count", 0)
+        record["dashboard"] = "Threat Intelligence"
+    elif source == "xsoar":
+        record["bound_rows"] = record.get("xsoar_row_count", 0)
+        record["dashboard"] = "SOC Manager / Detection / Executive"
+    else:  # qradar
+        record["bound_rows"] = 0
+        record["dashboard"] = None
+        record["warning"] = (
+            "QRadar files are stored but do not populate dashboards yet. "
+            "Upload an XSOAR or Threat Intel export to see live data."
+        )
+    if source in {"xsoar", "threat_intel"} and record["bound_rows"] == 0 and not record.get("ti_ingest_error") and not record.get("xsoar_ingest_error"):
+        record["warning"] = (
+            "0 rows matched the expected columns — nothing was added to the dashboard. "
+            "Check that your file's column headers match the expected format."
+        )
+    record["bound_tenant_id"] = tenant_id
+
     return record
 
 

@@ -1,0 +1,33 @@
+{
+  "summary": "Verified the upload-binding fix end-to-end: backend /api/upload/data now returns bound_rows/dashboard/warning/bound_tenant_id correctly for each source, and the UploadModal gives honest source-aware toasts + a result panel with upload-bound-rows and upload-warning. All 4 UI scenarios pass; all 6 pytest cases pass; DB cleaned after tests.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All dashboards (dev build)", "issues": ["A benign 'ResizeObserver loop completed with undelivered notifications' warning is being surfaced as a full-screen CRA/webpack error overlay, which visually blocks the dashboard and any modal actions until dismissed. Not a functional bug but very noisy for users; consider swallowing that specific warning in the runtime error listener or setting webpack-dev-server client.overlay.warnings=false / errors filter."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_upload_binding.py",
+    "/app/test_reports/pytest/upload_binding.xml"
+  ],
+  "action_items": [
+    "Optional: suppress ResizeObserver-loop warnings from the CRA/webpack error overlay so the dev preview isn't repeatedly covered by a red overlay (functionality is unaffected)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:465-551 upload_data now correctly discriminates qradar/xsoar/threat_intel and always sets bound_rows/warning/bound_tenant_id — clean.",
+    "UploadModal.jsx correctly toast.warning for qradar, toast.success only when bound>0, toast.error when 0 matched, and qc.invalidateQueries() ensures live dashboards refresh without reload.",
+    "Small nit: UploadModal reads data.ti_row_count/xsoar_row_count directly for toast logic; server also returns data.bound_rows (source-agnostic). Prefer bound_rows for consistency, but current logic is correct."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_upload_binding.py"
+  ],
+  "success_rate": { "backend": "100% (6/6)", "frontend": "100% (4/4 scenarios)" },
+  "test_credentials": "admin@mssp-soc.io / Admin@2026! (tenant: globalbank)",
+  "seed_data_creation": "None. Used /tmp/ti_sample.xlsx, /tmp/xsoar_sample.csv, /tmp/bad_cols.csv as-is. Cleaned uploaded rows via DELETE /api/dashboard/soc-manager/data and DELETE /api/dashboard/threat-intel/data for tenant globalbank at the end.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The upload-binding bug is fixed. Verified: (1) TI xlsx → bound_rows=1, dashboard flips live without reload (kpi-total-advisories=1, ti-data-source-chip visible). (2) XSOAR csv → bound_rows=2, soc-manager becomes live. (3) QRadar (default source) → toast.warning, upload-warning shown, upload-hint-qradar visible, dashboards stay empty. (4) TI + bad_cols.csv → toast.error, upload-warning with '0 rows matched', bound_rows=0. Backend contract validated via pytest.",
+  "rca of the issue": "Root cause of the original 'upload not reflecting' report was three-fold and now cleanly surfaced to the user: (a) UploadModal defaulted to 'qradar' source, and qradar rows are stored-only (never bound to any dashboard) → previously silent, now toast.warning + upload-hint-qradar + upload-warning. (b) TI/XSOAR parsers silently drop rows whose columns don't match canonical schema, so wrong-header uploads bound 0 rows → now toast.error + upload-warning explaining headers must match. (c) Tenant mismatch was already handled server-side; response now echoes bound_tenant_id so the UI can prove which tenant received data. React Query is invalidated on every successful upload, so live dashboards refresh with no manual reload."
+}
