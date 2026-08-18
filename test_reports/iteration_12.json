@@ -1,0 +1,34 @@
+{
+  "summary": "Verified the Welspun_July_2026.xlsx multi-sheet + 'Name' header fix end-to-end. Backend upload returns bound_rows=885, ti_row_count=885, warning=null, ti_ingest_error=null; GET /api/dashboard/threat-intel flips to data_status=live with summary.total_advisories=60. UI shows ti-data-source-chip 'LIVE FROM UPLOAD · welspun.xlsx · 885 rows' and kpi-total-advisories=60 without a page reload. Regression paths (bad_cols.csv → 0 bound + explicit warning; xsoar_sample.csv → 2 bound live SOC) still behave correctly. DB cleaned after tests.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "UploadModal result panel", "issues": ["'Rows in file' label shows 64 (first-sheet row count) while 'Bound to dashboard' correctly shows 885 (aggregated across all sheets). Slightly confusing — consider reporting the aggregated total-rows-in-file for multi-sheet xlsx to avoid apparent contradiction."]},
+      {"screen": "Threat Intelligence dashboard", "issues": ["Multiple Recharts warnings 'The width(-1) and height(-1) of chart should be greater than 0' on initial render (benign, chart eventually renders correctly)."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_upload_binding.py",
+    "/app/test_reports/pytest/upload_binding_welspun.xml"
+  ],
+  "action_items": [
+    "Cosmetic: align 'Rows in file' in UploadModal result panel with the aggregated row count when the xlsx has multiple sheets (currently shows only first sheet's rows)."
+  ],
+  "critical_code_review_comments": [
+    "ti_ingest.parse_rows correctly uses pd.read_excel(sheet_name=None) and aggregates via _rows_from_df across all sheets — verified with real user file (2 sheets → 885 canonical rows).",
+    "_CANONICAL mapping of 'name'/'title'/'sector' now matches the real file's header ('Name'), so total_advisories distinct count = 60 exactly as expected.",
+    "UploadModal source-aware feedback + qc.invalidateQueries() correctly makes the dashboard reflect the new data without reload (verified visually)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_upload_binding.py (added test_ti_welspun_real_file)"
+  ],
+  "success_rate": { "backend": "100% (7/7 including welspun)", "frontend": "100% (welspun happy-path + bad_cols regression)" },
+  "test_credentials": "admin@mssp-soc.io / Admin@2026! (tenant globalbank)",
+  "seed_data_creation": "None; used existing /tmp/welspun.xlsx, /tmp/bad_cols.csv, /tmp/xsoar_sample.csv. Cleaned uploaded rows via DELETE /api/dashboard/threat-intel/data and /api/dashboard/soc-manager/data for tenant globalbank.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Welspun multi-sheet + 'Name' header fix confirmed working. Backend: bound_rows=885, ti_row_count=885, total_advisories=60. Frontend: dashboard flips live without reload; ti-data-source-chip and kpi-total-advisories update via React Query invalidation. Only nit is the 'Rows in file' label in UploadModal showing first-sheet count for multi-sheet xlsx.",
+  "rca of the issue": "Original 0-rows behavior for Welspun_July_2026.xlsx had two root causes, both fixed: (a) ti_ingest._CANONICAL didn't map the header 'Name'/'Title'/'Sector' — now added; (b) pandas read_excel with default sheet_name=0 skipped the second 'Grand Total' summary sheet — parse_rows now uses sheet_name=None and aggregates _rows_from_df across all sheets. Verified real file yields 885 bound IOC rows and 60 distinct advisories."
+}

@@ -66,6 +66,22 @@ def test_ti_happy_path(client):
     assert ti["summary"]["total_advisories"] >= 1
 
 
+def test_ti_welspun_real_file(client):
+    """Verify the real user file (multi-sheet, 'Name' header) parses to 885 rows / 60 advisories."""
+    client.delete(f"{BASE_URL}/api/dashboard/threat-intel/data?tenant_id={TENANT}")
+    r = _upload(client, "threat_intel", "/tmp/welspun.xlsx")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["bound_rows"] == 885, data
+    assert data.get("ti_row_count") == 885, data
+    assert data.get("warning") is None, data
+    assert data.get("ti_ingest_error") is None, data
+    assert data["dashboard"] == "Threat Intelligence"
+    ti = client.get(f"{BASE_URL}/api/dashboard/threat-intel?tenant_id={TENANT}").json()
+    assert ti.get("data_status") == "live", ti
+    assert ti["summary"]["total_advisories"] == 60, ti["summary"]
+
+
 def test_ti_bad_columns_warns(client):
     client.delete(f"{BASE_URL}/api/dashboard/threat-intel/data?tenant_id={TENANT}")
     r = _upload(client, "threat_intel", "/tmp/bad_cols.csv")

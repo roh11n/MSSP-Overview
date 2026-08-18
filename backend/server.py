@@ -472,7 +472,10 @@ async def upload_data(source: str, tenant_id: str = "all", file: UploadFile = Fi
         if name.endswith(".csv"):
             df = pd.read_csv(io.BytesIO(contents))
         elif name.endswith(".xlsx") or name.endswith(".xls"):
-            df = pd.read_excel(io.BytesIO(contents))
+            # Aggregate across ALL sheets so counts/columns reflect the whole workbook.
+            sheets = pd.read_excel(io.BytesIO(contents), sheet_name=None)
+            frames = [f for f in sheets.values() if f is not None and not f.empty]
+            df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         else:
             raise HTTPException(status_code=400, detail="File must be CSV or Excel")
     except HTTPException:

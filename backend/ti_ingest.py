@@ -27,9 +27,14 @@ _CANONICAL = {
     "advisories name": "advisory",
     "advisory name": "advisory",
     "advisory": "advisory",
+    "advisory title": "advisory",
+    "title": "advisory",
+    "name": "advisory",
     "industry": "industry",
+    "sector": "industry",
     "date of release": "date",
     "release date": "date",
+    "date": "date",
     "ips": "ip",
     "ip": "ip",
     "ip address": "ip",
@@ -84,16 +89,8 @@ def _clean(v):
     return s or None
 
 
-def parse_rows(contents: bytes, filename: str) -> List[Dict[str, Any]]:
-    """Parse a CSV/XLSX blob into a normalised list of TI row dicts."""
-    name = (filename or "").lower()
-    if name.endswith(".csv"):
-        df = pd.read_csv(io.BytesIO(contents))
-    else:
-        df = pd.read_excel(io.BytesIO(contents))
-
+def _rows_from_df(df) -> List[Dict[str, Any]]:
     df.columns = [_norm_col(c) for c in df.columns]
-
     out: List[Dict[str, Any]] = []
     for _, r in df.iterrows():
         advisory = _clean(r.get("advisory"))
@@ -117,6 +114,24 @@ def parse_rows(contents: bytes, filename: str) -> List[Dict[str, Any]]:
             "hash": hsh,
             "hash_type": htype,
         })
+    return out
+
+
+def parse_rows(contents: bytes, filename: str) -> List[Dict[str, Any]]:
+    """Parse a CSV/XLSX blob into a normalised list of TI row dicts.
+    For Excel workbooks EVERY sheet is scanned (some exports keep a summary
+    sheet first), and rows from all sheets are aggregated."""
+    name = (filename or "").lower()
+    if name.endswith(".csv"):
+        return _rows_from_df(pd.read_csv(io.BytesIO(contents)))
+
+    sheets = pd.read_excel(io.BytesIO(contents), sheet_name=None)
+    out: List[Dict[str, Any]] = []
+    for _sheet_name, df in sheets.items():
+        try:
+            out.extend(_rows_from_df(df))
+        except Exception:
+            continue
     return out
 
 
