@@ -30,10 +30,12 @@ def generate(exec_data: dict, soc: dict = None, det: dict = None, ti: dict = Non
     auto = exec_data.get("automation_rate") or 0
     fp = exec_data.get("false_positive_rate") or 0
     risk = exec_data.get("risk_score") or 0
+    inc = exec_data.get("incidents") or 0
     top_rule = exec_data.get("top_rule")
     top_tactic = exec_data.get("top_mitre_tactic")
 
-    if sla and sla < 95:
+    # SOC operational recs only make sense when there are incidents in scope.
+    if inc and sla < 95:
         recs.append({
             "priority": "P1", "tag": _tag("P1"), "area": "SLA",
             "title": f"SLA compliance at {sla}% — below 95% target",
@@ -41,7 +43,7 @@ def generate(exec_data: dict, soc: dict = None, det: dict = None, ti: dict = Non
             "action": "Re-balance L1 shift coverage and enable auto-escalation after 15 min queue time.",
         })
 
-    if mttr and mttr > 60:
+    if inc and mttr > 60:
         recs.append({
             "priority": "P2", "tag": _tag("P2"), "area": "Speed",
             "title": f"MTTR trending high at {mttr}h",
