@@ -5,10 +5,6 @@ local Ollama LLM (IRIS)** — into one `docker compose` stack you run on your ow
 Linux VM or box. IRIS answers chat questions using a **real local model**
 (default `qwen2.5:1.5b`) served by Ollama — nothing is sent to a third‑party API.
 
-> Why not Emergent one‑click deploy? Emergent's managed hosting caps each app at
-> ~0.25 CPU / ~1 GB RAM, which cannot run a local LLM. This self‑hosted package
-> is the way to keep the model local, exactly as you asked.
-
 ---
 
 ## 1. Requirements
